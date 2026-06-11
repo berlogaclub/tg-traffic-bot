@@ -4,4 +4,4 @@ gspread==6.1.2
 google-auth==2.36.0
 APScheduler==3.10.4
 python-dotenv==1.0.1
-aiohttp==3.11.10
+aiohttp==3.10.11

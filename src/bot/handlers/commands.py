@@ -504,10 +504,15 @@ async def cmd_resetsources(message: Message, bot: Bot) -> None:
                     failed_revoke.append(src["name"])
                     logger.warning("Не удалось отозвать ссылку %s: %s", src["name"], e)
 
-        # 2. Удаляем из БД (CASCADE → subscribers/costs тоже)
+        # 2. Удаляем из БД
+        # Сначала обнуляем source_id у subscribers/customers (FK без CASCADE)
+        # потом удаляем источники (costs удалятся каскадно)
         def _delete_all():
             db = get_db()
-            db.table("sources").delete().eq("account_id", account["id"]).execute()
+            acc_id = account["id"]
+            db.table("subscribers").update({"source_id": None}).eq("account_id", acc_id).execute()
+            db.table("customers").update({"source_id": None}).eq("account_id", acc_id).execute()
+            db.table("sources").delete().eq("account_id", acc_id).execute()
         await _run_sync(_delete_all)
 
         # 3. Обновляем таблицу

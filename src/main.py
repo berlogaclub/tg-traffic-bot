@@ -16,7 +16,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.bot.handlers import setup_handlers
 from src.core.config import config
 from src.core.logging_setup import setup_logging
-from src.services.attribution import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ ALLOWED_UPDATES = [
 ]
 
 
-async def on_startup(bot: Bot, dp: Dispatcher) -> None:
+async def on_startup(bot: Bot) -> None:
     me = await bot.get_me()
     logger.info("Бот запущен: @%s (id=%s)", me.username, me.id)
 

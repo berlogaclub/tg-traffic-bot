@@ -433,6 +433,95 @@ async def cmd_debug(message: Message) -> None:
         await message.answer(f"Ошибка БД: {e}")
 
 
+# ─── /resetsources ───────────────────────────────────────────────────────────
+
+@router.message(Command("resetsources"))
+async def cmd_resetsources(message: Message, bot: Bot) -> None:
+    """
+    /resetsources          — показывает список и просит подтверждение
+    /resetsources confirm  — выполняет удаление
+    """
+    account = await get_account_by_tg_id(message.from_user.id)
+    if not account:
+        await message.answer("Сначала запусти /start")
+        return
+
+    # Только владелец
+    from src.core.database import get_db, run_sync as _run_sync
+    def _check_owner():
+        db = get_db()
+        r = db.table("accounts").select("id").eq("id", account["id"]).eq("tg_user_id", message.from_user.id).limit(1).execute()
+        return bool(r and r.data)
+    is_owner = await _run_sync(_check_owner)
+    if not is_owner:
+        await message.answer("⚠️ Только владелец проекта может выполнять сброс.")
+        return
+
+    sources = await get_sources(account["id"])
+    if not sources:
+        await message.answer("Источников нет — сбрасывать нечего.")
+        return
+
+    # Проверяем аргумент
+    args = message.text.split(maxsplit=1)
+    confirmed = len(args) >= 2 and args[1].strip().lower() == "confirm"
+
+    if not confirmed:
+        # Показываем список и просим подтверждение
+        src_list = "\n".join(f"• {s['name']}" for s in sources)
+        await message.answer(
+            f"⚠️ <b>Подтверди сброс</b>\n\n"
+            f"Будут удалены <b>{len(sources)} источников</b>:\n{src_list}\n\n"
+            "Также удалятся:\n"
+            "• Все invite-ссылки из канала\n"
+            "• Записи о подписчиках по этим источникам\n"
+            "• Расходы по источникам\n"
+            "• Строки в Google Sheets\n\n"
+            "Для подтверждения отправь:\n<code>/resetsources confirm</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # ── Выполняем сброс ──────────────────────────────────────────────────────
+    wait_msg = await message.answer(f"⏳ Удаляю {len(sources)} источников...")
+
+    free_channel_id = account.get("free_channel_id")
+    revoked = 0
+    failed_revoke = []
+
+    for src in sources:
+        invite_link = src.get("invite_link", "")
+        if free_channel_id and invite_link:
+            try:
+                await bot.revoke_chat_invite_link(
+                    chat_id=free_channel_id,
+                    invite_link=invite_link,
+                )
+                revoked += 1
+            except TelegramAPIError as e:
+                failed_revoke.append(src["name"])
+                logger.warning("Не удалось отозвать ссылку %s: %s", src["name"], e)
+
+    # Удаляем все источники из БД (ON DELETE CASCADE → subscribers/costs тоже)
+    def _delete_all():
+        db = get_db()
+        db.table("sources").delete().eq("account_id", account["id"]).execute()
+    await _run_sync(_delete_all)
+
+    # Обновляем таблицу (теперь будет только «Не определён»)
+    from src.services.sheets_sync import sync_to_sheets
+    await sync_to_sheets(account["id"])
+
+    lines = ["✅ <b>Сброс выполнен</b>\n"]
+    lines.append(f"• Удалено источников из БД: {len(sources)}")
+    lines.append(f"• Отозвано ссылок из канала: {revoked}")
+    if failed_revoke:
+        lines.append(f"• Не удалось отозвать: {', '.join(failed_revoke)}")
+    lines.append("\nТаблица очищена. Создавай новые источники: /newsource")
+
+    await wait_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
 # ─── /invite ─────────────────────────────────────────────────────────────────
 
 @router.message(Command("invite"))

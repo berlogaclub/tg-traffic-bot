@@ -34,7 +34,19 @@ class SetupStates(StatesGroup):
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    account = await get_or_create_account(message.from_user.id)
+    try:
+        account = await get_or_create_account(message.from_user.id)
+    except Exception as e:
+        logger.error("Ошибка /start (БД): %s", e, exc_info=True)
+        await message.answer(
+            "⚠️ Ошибка подключения к базе данных.\n\n"
+            "Возможные причины:\n"
+            "• Миграция Supabase не применена (001_initial.sql)\n"
+            "• Неверные SUPABASE_URL или SUPABASE_SERVICE_KEY в Railway Variables\n\n"
+            "Исправь и попробуй снова."
+        )
+        return
+
     text = (
         "👋 <b>TG Traffic Analytics</b>\n\n"
         "Я слежу за источниками трафика и связываю подписчиков с покупателями.\n\n"

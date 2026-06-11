@@ -354,7 +354,13 @@ async def cmd_stats(message: Message) -> None:
 
     wait_msg = await message.answer("⏳ Считаю метрики...")
 
-    metrics = await compute_metrics(account["id"])
+    try:
+        metrics = await compute_metrics(account["id"])
+    except Exception as e:
+        logger.error("Ошибка compute_metrics: %s", e, exc_info=True)
+        await wait_msg.edit_text("Ошибка при расчёте метрик. Проверь что миграция Supabase применена (/start для диагностики).")
+        return
+
     if not metrics:
         await wait_msg.edit_text("Нет данных. Добавь источники (/newsource) и дождись подписчиков.")
         return

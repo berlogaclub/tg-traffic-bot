@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.bot.handlers import setup_handlers
@@ -31,7 +32,6 @@ ALLOWED_UPDATES = [
 
 
 def _get_port() -> int:
-    # Railway автоматически задаёт PORT; наш WEBHOOK_PORT — запасной вариант
     return int(os.environ.get("PORT", os.environ.get("WEBHOOK_PORT", "8080")))
 
 
@@ -42,7 +42,14 @@ async def _run_scheduled_sync(bot: Bot) -> None:
 
         def _get_accounts():
             db = get_db()
-            return db.table("settings").select("account_id").eq("sync_enabled", True).execute().data or []
+            return (
+                db.table("settings")
+                .select("account_id")
+                .eq("sync_enabled", True)
+                .execute()
+                .data
+                or []
+            )
 
         accounts = await run_sync(_get_accounts)
         for row in accounts:
@@ -74,7 +81,7 @@ async def _run_webhook(bot: Bot, dp: Dispatcher) -> None:
     await bot.set_webhook(
         url=webhook_url,
         allowed_updates=ALLOWED_UPDATES,
-        drop_pending_updates=False,
+        drop_pending_updates=True,
     )
     logger.info("Webhook установлен: %s", webhook_url)
 
@@ -98,13 +105,26 @@ async def _run_webhook(bot: Bot, dp: Dispatcher) -> None:
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
-        await bot.delete_webhook()
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
 
 
 async def _run_polling(bot: Bot, dp: Dispatcher) -> None:
-    logger.info("Старт в режиме polling (webhook не задан)")
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+    logger.info("Старт в режиме polling")
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    while True:
+        try:
+            await dp.start_polling(
+                bot,
+                allowed_updates=ALLOWED_UPDATES,
+                handle_signals=False,
+            )
+        except Exception as e:
+            logger.error("Polling упал: %s — перезапуск через 5 сек", e, exc_info=True)
+            await asyncio.sleep(5)
 
 
 async def _main_async() -> None:
@@ -115,7 +135,17 @@ async def _main_async() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
+
     setup_handlers(dp)
+
+    @dp.errors()
+    async def global_error_handler(event: ErrorEvent) -> bool:
+        logger.error(
+            "Необработанная ошибка в хендлере: %s",
+            event.exception,
+            exc_info=event.exception,
+        )
+        return True  # подавляем ошибку, polling продолжается
 
     me = await bot.get_me()
     logger.info("Бот: @%s (id=%s)", me.username, me.id)

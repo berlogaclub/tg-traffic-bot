@@ -485,41 +485,50 @@ async def cmd_resetsources(message: Message, bot: Bot) -> None:
     # ── Выполняем сброс ──────────────────────────────────────────────────────
     wait_msg = await message.answer(f"⏳ Удаляю {len(sources)} источников...")
 
-    free_channel_id = account.get("free_channel_id")
-    revoked = 0
-    failed_revoke = []
+    try:
+        free_channel_id = account.get("free_channel_id")
+        revoked = 0
+        failed_revoke = []
 
-    for src in sources:
-        invite_link = src.get("invite_link", "")
-        if free_channel_id and invite_link:
-            try:
-                await bot.revoke_chat_invite_link(
-                    chat_id=free_channel_id,
-                    invite_link=invite_link,
-                )
-                revoked += 1
-            except TelegramAPIError as e:
-                failed_revoke.append(src["name"])
-                logger.warning("Не удалось отозвать ссылку %s: %s", src["name"], e)
+        # 1. Отзываем ссылки из канала
+        for src in sources:
+            invite_link = src.get("invite_link", "")
+            if free_channel_id and invite_link:
+                try:
+                    await bot.revoke_chat_invite_link(
+                        chat_id=free_channel_id,
+                        invite_link=invite_link,
+                    )
+                    revoked += 1
+                except Exception as e:
+                    failed_revoke.append(src["name"])
+                    logger.warning("Не удалось отозвать ссылку %s: %s", src["name"], e)
 
-    # Удаляем все источники из БД (ON DELETE CASCADE → subscribers/costs тоже)
-    def _delete_all():
-        db = get_db()
-        db.table("sources").delete().eq("account_id", account["id"]).execute()
-    await _run_sync(_delete_all)
+        # 2. Удаляем из БД (CASCADE → subscribers/costs тоже)
+        def _delete_all():
+            db = get_db()
+            db.table("sources").delete().eq("account_id", account["id"]).execute()
+        await _run_sync(_delete_all)
 
-    # Обновляем таблицу (теперь будет только «Не определён»)
-    from src.services.sheets_sync import sync_to_sheets
-    await sync_to_sheets(account["id"])
+        # 3. Обновляем таблицу
+        from src.services.sheets_sync import sync_to_sheets
+        await sync_to_sheets(account["id"])
 
-    lines = ["✅ <b>Сброс выполнен</b>\n"]
-    lines.append(f"• Удалено источников из БД: {len(sources)}")
-    lines.append(f"• Отозвано ссылок из канала: {revoked}")
-    if failed_revoke:
-        lines.append(f"• Не удалось отозвать: {', '.join(failed_revoke)}")
-    lines.append("\nТаблица очищена. Создавай новые источники: /newsource")
+        lines = ["✅ <b>Сброс выполнен</b>\n"]
+        lines.append(f"• Удалено источников из БД: {len(sources)}")
+        lines.append(f"• Отозвано ссылок из канала: {revoked}")
+        if failed_revoke:
+            lines.append(f"• Не удалось отозвать: {', '.join(failed_revoke)}")
+        lines.append("\nТаблица очищена. Создавай новые источники: /newsource")
 
-    await wait_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        await wait_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error("Ошибка /resetsources confirm: %s", e, exc_info=True)
+        await wait_msg.edit_text(
+            f"❌ Ошибка при сбросе:\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
 
 
 # ─── /invite ─────────────────────────────────────────────────────────────────

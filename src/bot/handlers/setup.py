@@ -14,6 +14,7 @@ from aiogram.types import CallbackQuery, Message
 from src.bot.keyboards.inline import cancel_keyboard, setup_keyboard
 from src.core.config import config
 from src.services.attribution import (
+    add_team_member,
     get_account_by_tg_id,
     get_or_create_account,
     update_account,
@@ -37,7 +38,11 @@ class SetupStates(StatesGroup):
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
 
-    # Если пользователь уже есть в БД — пропускаем проверку пароля
+    # Получаем аргумент диплинка: /start join_ACCOUNT_ID
+    args = message.text.split(maxsplit=1)
+    deep_arg = args[1].strip() if len(args) > 1 else ""
+
+    # Если пользователь уже есть в БД — просто открываем меню
     try:
         existing = await get_account_by_tg_id(message.from_user.id)
     except Exception as e:
@@ -55,7 +60,41 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await _show_main_menu(message)
         return
 
-    # Новый пользователь — проверяем пароль если задан
+    # ── Обработка инвайт-ссылки от владельца ─────────────────────────────────
+    if deep_arg.startswith("join_"):
+        account_id = deep_arg[5:]  # убираем "join_"
+        try:
+            from src.core.database import get_db, run_sync
+            def _check_account():
+                db = get_db()
+                r = db.table("accounts").select("id, tg_user_id").eq("id", account_id).limit(1).execute()
+                return r.data[0] if (r and r.data) else None
+            owner_account = await run_sync(_check_account)
+        except Exception:
+            owner_account = None
+
+        if not owner_account:
+            await message.answer("❌ Инвайт-ссылка недействительна или устарела.")
+            return
+
+        if owner_account["tg_user_id"] == message.from_user.id:
+            await message.answer("Это твой собственный аккаунт — ты уже владелец.")
+            return
+
+        # Проверяем пароль если задан
+        if config.bot_password:
+            await state.set_state(SetupStates.waiting_for_password)
+            await state.update_data(join_account_id=account_id)
+            await message.answer(
+                "🔐 <b>Введи пароль для доступа к боту:</b>",
+                parse_mode="HTML",
+            )
+            return
+
+        await _add_member_and_show_menu(message, account_id)
+        return
+
+    # ── Обычный /start — новый пользователь ──────────────────────────────────
     if config.bot_password:
         await state.set_state(SetupStates.waiting_for_password)
         await message.answer(
@@ -71,13 +110,34 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(SetupStates.waiting_for_password)
 async def process_password(message: Message, state: FSMContext) -> None:
     entered = (message.text or "").strip()
-    if entered == config.bot_password:
-        await state.clear()
-        await _register_and_show_menu(message)
+    if entered != config.bot_password:
+        await message.answer("❌ Неверный пароль. Попробуй ещё раз.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    join_account_id = data.get("join_account_id")
+    if join_account_id:
+        await _add_member_and_show_menu(message, join_account_id)
     else:
-        await message.answer(
-            "❌ Неверный пароль. Попробуй ещё раз или обратись к администратору."
-        )
+        await _register_and_show_menu(message)
+
+
+async def _add_member_and_show_menu(message: Message, account_id: str) -> None:
+    try:
+        await add_team_member(account_id, message.from_user.id)
+    except Exception as e:
+        logger.error("Ошибка add_team_member: %s", e, exc_info=True)
+        await message.answer("⚠️ Ошибка при добавлении в команду. Попробуй снова.")
+        return
+    await message.answer(
+        "✅ <b>Добавлен в команду!</b>\n\n"
+        "Теперь у тебя есть доступ к проекту.\n"
+        "Ты можешь создавать источники, смотреть статистику и всё остальное.",
+        parse_mode="HTML",
+        reply_markup=setup_keyboard(),
+    )
 
 
 async def _register_and_show_menu(message: Message) -> None:
@@ -125,7 +185,8 @@ async def cmd_help(message: Message) -> None:
         "/stats — дашборд по всем источникам\n"
         "/stats &lt;источник&gt; — детализация одного источника\n"
         "/setprice &lt;сумма&gt; — установить цену продукта\n"
-        "/syncsheets — синхронизировать с Google Sheets"
+        "/syncsheets — синхронизировать с Google Sheets\n"
+        "/invite — пригласить коллегу в проект"
     )
     await message.answer(text, parse_mode="HTML")
 

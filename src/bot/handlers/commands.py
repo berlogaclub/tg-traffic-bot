@@ -433,6 +433,39 @@ async def cmd_debug(message: Message) -> None:
         await message.answer(f"Ошибка БД: {e}")
 
 
+# ─── /invite ─────────────────────────────────────────────────────────────────
+
+@router.message(Command("invite"))
+async def cmd_invite(message: Message, bot: Bot) -> None:
+    account = await get_account_by_tg_id(message.from_user.id)
+    if not account:
+        await message.answer("Сначала запусти /start")
+        return
+
+    # Проверяем что пользователь — владелец аккаунта (не участник команды)
+    from src.core.database import get_db, run_sync
+    def _check_owner():
+        db = get_db()
+        r = db.table("accounts").select("id").eq("id", account["id"]).eq("tg_user_id", message.from_user.id).limit(1).execute()
+        return bool(r and r.data)
+    is_owner = await run_sync(_check_owner)
+    if not is_owner:
+        await message.answer("⚠️ Только владелец проекта может создавать инвайт-ссылки.")
+        return
+
+    bot_info = await bot.get_me()
+    invite_link = f"https://t.me/{bot_info.username}?start=join_{account['id']}"
+
+    await message.answer(
+        "👥 <b>Инвайт-ссылка для команды</b>\n\n"
+        f"<code>{invite_link}</code>\n\n"
+        "Отправь эту ссылку коллеге. Он кликнет → введёт пароль (если задан) → "
+        "сразу получит доступ к твоему проекту.\n\n"
+        "⚠️ Ссылка даёт полный доступ к проекту: источники, статистика, расходы.",
+        parse_mode="HTML",
+    )
+
+
 # ─── /debugsync ──────────────────────────────────────────────────────────────
 
 @router.message(Command("debugsync"))

@@ -43,8 +43,13 @@ async def get_or_create_account(tg_user_id: int) -> dict:
 
 
 async def get_account_by_tg_id(tg_user_id: int) -> Optional[dict]:
+    """
+    Возвращает аккаунт пользователя.
+    Сначала проверяет владельцев, потом участников команды (team_members).
+    """
     def _query():
         db = get_db()
+        # Владелец аккаунта
         result = (
             db.table("accounts")
             .select("*")
@@ -52,9 +57,43 @@ async def get_account_by_tg_id(tg_user_id: int) -> Optional[dict]:
             .limit(1)
             .execute()
         )
-        return _one(result)
+        acc = _one(result)
+        if acc:
+            return acc
+        # Участник команды — берём аккаунт владельца
+        member = _one(
+            db.table("team_members")
+            .select("account_id")
+            .eq("tg_user_id", tg_user_id)
+            .limit(1)
+            .execute()
+        )
+        if not member:
+            return None
+        return _one(
+            db.table("accounts")
+            .select("*")
+            .eq("id", member["account_id"])
+            .limit(1)
+            .execute()
+        )
 
     return await run_sync(_query)
+
+
+async def add_team_member(account_id: str, tg_user_id: int) -> bool:
+    """Добавляет пользователя в команду. Возвращает True если добавлен, False если уже был."""
+    def _insert():
+        db = get_db()
+        result = (
+            db.table("team_members")
+            .upsert({"account_id": account_id, "tg_user_id": tg_user_id},
+                    on_conflict="account_id,tg_user_id")
+            .execute()
+        )
+        return bool(result and result.data)
+
+    return await run_sync(_insert)
 
 
 async def get_account_by_free_channel(channel_id: int) -> Optional[dict]:

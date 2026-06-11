@@ -258,19 +258,20 @@ async def _insert_event(
 async def create_source(account_id: str, name: str, invite_link: str, invite_name: str) -> dict:
     def _insert():
         db = get_db()
-        result = (
-            db.table("sources")
-            .insert(
-                {
-                    "account_id": account_id,
-                    "name": name,
-                    "invite_link": invite_link,
-                    "invite_name": invite_name,
-                }
+        result = db.table("sources").insert(
+            {
+                "account_id": account_id,
+                "name": name,
+                "invite_link": invite_link,
+                "invite_name": invite_name,
+            }
+        ).execute()
+        if not result or not result.data:
+            raise RuntimeError(
+                f"Supabase вернул пустой результат при вставке источника. "
+                f"result={result}"
             )
-            .execute()
-        )
-        return _one(result) or {}
+        return result.data[0]
 
     return await run_sync(_insert)
 

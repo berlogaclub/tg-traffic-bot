@@ -390,6 +390,45 @@ async def cmd_stats(message: Message) -> None:
         await wait_msg.edit_text(format_stats_table(metrics), parse_mode="HTML")
 
 
+# ─── /debug ──────────────────────────────────────────────────────────────────
+
+@router.message(Command("debug"))
+async def cmd_debug(message: Message) -> None:
+    account = await get_account_by_tg_id(message.from_user.id)
+    if not account:
+        await message.answer("Аккаунт не найден. Запусти /start")
+        return
+
+    try:
+        from src.core.database import get_db, run_sync
+
+        def _check():
+            db = get_db()
+            sources = db.table("sources").select("id, name").eq("account_id", account["id"]).execute()
+            subs = db.table("subscribers").select("id", count="exact").eq("account_id", account["id"]).execute()
+            custs = db.table("customers").select("id", count="exact").eq("account_id", account["id"]).execute()
+            return {
+                "sources": sources.data or [],
+                "subs_count": subs.count or 0,
+                "custs_count": custs.count or 0,
+            }
+
+        data = await run_sync(_check)
+        src_list = "\n".join(f"  • {s['name']}" for s in data["sources"]) or "  (нет источников)"
+        text = (
+            f"<b>🔍 Debug</b>\n\n"
+            f"Account ID: <code>{account['id']}</code>\n"
+            f"free_channel_id: <code>{account.get('free_channel_id')}</code>\n"
+            f"paid_chat_id: <code>{account.get('paid_chat_id')}</code>\n\n"
+            f"Источники ({len(data['sources'])}):\n{src_list}\n\n"
+            f"Подписчиков: {data['subs_count']}\n"
+            f"Клиентов: {data['custs_count']}"
+        )
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"Ошибка БД: {e}")
+
+
 # ─── /syncsheets ─────────────────────────────────────────────────────────────
 
 @router.message(Command("syncsheets"))

@@ -26,22 +26,26 @@ SHEET_NAME = "Sources"
 
 # Заголовки листа (порядок важен)
 HEADERS = [
-    "Источник",
-    "Подписчики",
-    "Клиенты",
-    "Конв.%",
-    "Расход (ввод)",
-    "Цена продукта (ввод)",
-    "Выручка",
-    "CPF",
-    "CAC",
-    "ROMI%",
-    "Окуп.",
+    "Источник",            # 0  — имя источника
+    "Ссылка",              # 1  — invite-ссылка (автозаполнение)
+    "Ссылка на площадку",  # 2  — ссылка на рекламную площадку (ручной ввод)
+    "Подписчики",          # 3
+    "Клиенты",             # 4
+    "Конв.%",              # 5
+    "Расход",              # 6  — ручной ввод суммы
+    "Цена продукта",       # 7  — ручной ввод цены
+    "Выручка",             # 8
+    "CPF",                 # 9
+    "CAC",                 # 10
+    "ROMI%",               # 11
+    "Окуп.",               # 12
 ]
 
-# Индексы колонок ввода (0-based)
-COL_COST = 4         # "Расход (ввод)"
-COL_PRICE = 5        # "Цена продукта (ввод)"
+# Индексы колонок ввода (0-based) — сохраняются при каждом синке
+COL_LINK = 1         # "Ссылка" — автозаполняется
+COL_AD_LINK = 2      # "Ссылка на площадку" — ручной ввод, не перезаписывается
+COL_COST = 6         # "Расход" — ручной ввод суммы
+COL_PRICE = 7        # "Цена продукта" — ручной ввод
 
 
 def _get_gc() -> Optional[gspread.Client]:
@@ -80,11 +84,11 @@ def _ensure_sheet(spreadsheet: gspread.Spreadsheet) -> gspread.Worksheet:
     return ws
 
 
-def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
+def _build_rows(account_id: str, db, existing_inputs: dict) -> tuple[list, list[str]]:
     """
     Строит список строк для записи в таблицу.
+    existing_inputs: {source_name: {"ad_link": str, "cost": str, "price": str}}
     Возвращает (rows_to_write, warnings).
-    Бросает исключение при любой критической ошибке — не глотает их молча.
     """
     warnings: list[str] = []
 
@@ -93,19 +97,18 @@ def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
         raise RuntimeError(f"account_id={account_id!r} не найден в таблице accounts")
     product_price = float(_acc.data[0].get("product_price") or 0)
 
-    sources_res = db.table("sources").select("id, name").eq("account_id", account_id).execute()
+    sources_res = db.table("sources").select("id, name, invite_link").eq("account_id", account_id).execute()
     sources = sources_res.data if (sources_res and sources_res.data) else []
     logger.info("Синк: найдено источников=%d account=%s", len(sources), account_id)
 
     def sdiv(a, b):
-        if not b:
-            return ""
-        return round(a / b, 2)
+        return round(a / b, 2) if b else ""
 
     rows: list = []
     for src in sources:
         src_id = src["id"]
         src_name = src["name"]
+        invite_link = src.get("invite_link") or ""
 
         subs_r = db.table("subscribers").select("id").eq("account_id", account_id).eq("source_id", src_id).execute()
         sub_count = len(subs_r.data) if (subs_r and subs_r.data) else 0
@@ -129,18 +132,22 @@ def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
         romi = fmt(sdiv((revenue - total_cost) * 100, total_cost), 1)
         payback = fmt(sdiv(revenue, total_cost), 2)
 
+        saved = existing_inputs.get(src_name, {})
+
         rows.append([
-            src_name,
-            sub_count,
-            cust_count,
-            conv,
-            fmt(total_cost, 2),
-            fmt(product_price, 2),
-            fmt(revenue, 2),
-            cpf,
-            cac,
-            romi,
-            payback,
+            src_name,                                 # 0 Источник
+            invite_link,                              # 1 Ссылка (автозаполнение)
+            saved.get("ad_link", ""),                 # 2 Ссылка на площадку (сохраняем)
+            sub_count,                                # 3 Подписчики
+            cust_count,                               # 4 Клиенты
+            conv,                                     # 5 Конв.%
+            saved.get("cost") or fmt(total_cost, 2),  # 6 Расход (ввод или расчёт)
+            saved.get("price") or fmt(product_price, 2),  # 7 Цена продукта
+            fmt(revenue, 2),                          # 8 Выручка
+            cpf,                                      # 9 CPF
+            cac,                                      # 10 CAC
+            romi,                                     # 11 ROMI%
+            payback,                                  # 12 Окуп.
         ])
         logger.info("Синк: %r sub=%d cust=%d cost=%.2f rev=%.2f", src_name, sub_count, cust_count, total_cost, revenue)
 
@@ -149,7 +156,7 @@ def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
     unk_c = db.table("customers").select("id").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
     unk_sub = len(unk_s.data) if (unk_s and unk_s.data) else 0
     unk_cust = len(unk_c.data) if (unk_c and unk_c.data) else 0
-    rows.append(["Не определён", unk_sub, unk_cust, "—", "", "—", "—", "—", "—", "—", "—"])
+    rows.append(["Не определён", "", "", unk_sub, unk_cust, "—", "", "—", "—", "—", "—", "—", "—"])
 
     return rows, warnings
 
@@ -172,21 +179,26 @@ def _sync_blocking(account_id: str) -> str:
     spreadsheet = _retry_gspread(lambda: gc.open_by_key(config.google_sheet_id))
     ws = _ensure_sheet(spreadsheet)
 
-    # Читаем текущие значения колонок ввода (Расход, Цена) — не затираем их
+    # Читаем текущие значения колонок ввода — не затираем их при записи
     all_values = _retry_gspread(lambda: ws.get_all_values())
-    existing_inputs: dict[str, tuple[str, str]] = {}
+    # existing_inputs: {source_name: {"ad_link": str, "cost": str, "price": str}}
+    existing_inputs: dict[str, dict] = {}
     for row in all_values[1:]:
         if not row or not row[0]:
             continue
         name = row[0]
-        cost_val = row[COL_COST] if len(row) > COL_COST else ""
-        price_val = row[COL_PRICE] if len(row) > COL_PRICE else ""
-        existing_inputs[name] = (cost_val, price_val)
+        existing_inputs[name] = {
+            "ad_link": row[COL_AD_LINK] if len(row) > COL_AD_LINK else "",
+            "cost":    row[COL_COST]    if len(row) > COL_COST    else "",
+            "price":   row[COL_PRICE]   if len(row) > COL_PRICE   else "",
+        }
 
-    # Импорт расходов из листа в БД (если заполнены колонки ввода)
-    for source_name, (cost_str, price_str) in existing_inputs.items():
-        if source_name in ("Не определён",):
+    # Импорт расходов из листа в БД (если пользователь заполнил колонку «Расход»)
+    for source_name, vals in existing_inputs.items():
+        if source_name == "Не определён":
             continue
+        cost_str = vals.get("cost", "")
+        price_str = vals.get("price", "")
         _src = db.table("sources").select("id").eq("account_id", account_id).eq("name", source_name).limit(1).execute()
         source = _src.data[0] if (_src and _src.data) else None
         if not source:
@@ -213,18 +225,8 @@ def _sync_blocking(account_id: str) -> str:
             except (ValueError, TypeError):
                 pass
 
-    # Строим строки и пишем в таблицу
-    rows, warnings = _build_rows(account_id, db)
-
-    # Восстанавливаем колонки ввода которые были в таблице
-    for row in rows:
-        name = row[0]
-        if name in existing_inputs:
-            saved_cost, saved_price = existing_inputs[name]
-            if saved_cost:
-                row[COL_COST] = saved_cost
-            if saved_price:
-                row[COL_PRICE] = saved_price
+    # Строим строки (existing_inputs передаём чтобы сохранить ввод пользователя)
+    rows, warnings = _build_rows(account_id, db, existing_inputs)
 
     # Очищаем и пишем заново
     last_col = chr(ord("A") + len(HEADERS) - 1)

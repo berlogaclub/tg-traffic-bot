@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from src.bot.keyboards.inline import cancel_keyboard, setup_keyboard
+from src.core.config import config
 from src.services.attribution import (
     get_account_by_tg_id,
     get_or_create_account,
@@ -24,6 +25,7 @@ router = Router()
 
 
 class SetupStates(StatesGroup):
+    waiting_for_password = State()
     waiting_for_channel = State()
     waiting_for_paid_chat = State()
     waiting_for_price = State()
@@ -34,8 +36,10 @@ class SetupStates(StatesGroup):
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+
+    # Если пользователь уже есть в БД — пропускаем проверку пароля
     try:
-        account = await get_or_create_account(message.from_user.id)
+        existing = await get_account_by_tg_id(message.from_user.id)
     except Exception as e:
         logger.error("Ошибка /start (БД): %s", e, exc_info=True)
         await message.answer(
@@ -47,6 +51,46 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
         return
 
+    if existing:
+        await _show_main_menu(message)
+        return
+
+    # Новый пользователь — проверяем пароль если задан
+    if config.bot_password:
+        await state.set_state(SetupStates.waiting_for_password)
+        await message.answer(
+            "🔐 <b>Доступ защищён паролем</b>\n\n"
+            "Введи пароль для доступа к боту:",
+            parse_mode="HTML",
+        )
+        return
+
+    await _register_and_show_menu(message)
+
+
+@router.message(SetupStates.waiting_for_password)
+async def process_password(message: Message, state: FSMContext) -> None:
+    entered = (message.text or "").strip()
+    if entered == config.bot_password:
+        await state.clear()
+        await _register_and_show_menu(message)
+    else:
+        await message.answer(
+            "❌ Неверный пароль. Попробуй ещё раз или обратись к администратору."
+        )
+
+
+async def _register_and_show_menu(message: Message) -> None:
+    try:
+        await get_or_create_account(message.from_user.id)
+    except Exception as e:
+        logger.error("Ошибка создания аккаунта: %s", e, exc_info=True)
+        await message.answer("⚠️ Ошибка при создании аккаунта. Попробуй снова.")
+        return
+    await _show_main_menu(message)
+
+
+async def _show_main_menu(message: Message) -> None:
     text = (
         "👋 <b>TG Traffic Analytics</b>\n\n"
         "Я слежу за источниками трафика и связываю подписчиков с покупателями.\n\n"

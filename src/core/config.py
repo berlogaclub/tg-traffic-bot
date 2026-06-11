@@ -16,6 +16,7 @@ class Config:
     google_credentials: dict
     google_sheet_id: str
     log_level: str
+    bot_password: str  # если задан — новые пользователи должны ввести его при /start
 
 
 def _load_google_credentials() -> dict:
@@ -44,6 +45,7 @@ def load_config() -> Config:
         google_credentials=_load_google_credentials(),
         google_sheet_id=os.environ.get("GOOGLE_SHEET_ID", ""),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
+        bot_password=os.environ.get("BOT_PASSWORD", ""),
     )
 
 

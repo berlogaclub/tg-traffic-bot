@@ -159,69 +159,90 @@ def _sync_blocking(account_id: str) -> None:
     account_fresh = (_acc2.data[0] if _acc2 and _acc2.data else None)
     product_price = float(account_fresh.get("product_price") or 0) if account_fresh else 0.0
 
-    sources = db.table("sources").select("id, name").eq("account_id", account_id).order("created_at").execute().data or []
+    sources_res = db.table("sources").select("*").eq("account_id", account_id).execute()
+    sources = sources_res.data if sources_res and sources_res.data else []
+    logger.info("Синк: найдено источников=%d для account=%s", len(sources), account_id)
+
+    def sdiv(a, b):
+        return round(a / b, 2) if b else ""
 
     rows_to_write = []
     for src in sources:
-        source_id = src["id"]
-        subs = db.table("subscribers").select("id", count="exact").eq("account_id", account_id).eq("source_id", source_id).execute()
-        custs = db.table("customers").select("id, amount", count="exact").eq("account_id", account_id).eq("source_id", source_id).eq("entry_type", "paid").execute()
-        costs_data = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", source_id).execute().data or []
+        try:
+            source_id = src["id"]
 
-        sub_count = subs.count or 0
-        cust_count = custs.count or 0
-        total_cost = sum(float(c["amount"]) for c in costs_data)
-        custs_list = custs.data or []
-        revenue = sum(float(c["amount"]) if c.get("amount") else product_price for c in custs_list)
+            subs_res = db.table("subscribers").select("*").eq("account_id", account_id).eq("source_id", source_id).execute()
+            subs_list = subs_res.data if subs_res and subs_res.data else []
+            sub_count = len(subs_list)
 
-        def sdiv(a, b):
-            return round(a / b, 2) if b else ""
+            custs_res = db.table("customers").select("*").eq("account_id", account_id).eq("source_id", source_id).eq("entry_type", "paid").execute()
+            custs_list = custs_res.data if custs_res and custs_res.data else []
+            cust_count = len(custs_list)
 
-        input_cost, input_price = existing_inputs.get(src["name"], ("", ""))
+            costs_res = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", source_id).execute()
+            costs_list = costs_res.data if costs_res and costs_res.data else []
+            total_cost = sum(float(c["amount"]) for c in costs_list)
 
-        rows_to_write.append([
-            src["name"],
-            sub_count,
-            cust_count,
-            fmt(sdiv(cust_count * 100, sub_count) if sub_count else None, 1),
-            input_cost or fmt(total_cost, 2),
-            input_price or fmt(product_price, 2),
-            fmt(revenue, 2),
-            fmt(sdiv(total_cost, sub_count), 2),
-            fmt(sdiv(total_cost, cust_count), 2),
-            fmt(sdiv((revenue - total_cost) * 100, total_cost), 1),
-            fmt(sdiv(revenue, total_cost), 2),
-        ])
+            revenue = sum(float(c["amount"]) if c.get("amount") else product_price for c in custs_list)
+
+            input_cost, input_price = existing_inputs.get(src["name"], ("", ""))
+
+            rows_to_write.append([
+                src["name"],
+                sub_count,
+                cust_count,
+                fmt(sdiv(cust_count * 100, sub_count) if sub_count else None, 1),
+                input_cost or fmt(total_cost, 2),
+                input_price or fmt(product_price, 2),
+                fmt(revenue, 2),
+                fmt(sdiv(total_cost, sub_count), 2),
+                fmt(sdiv(total_cost, cust_count), 2),
+                fmt(sdiv((revenue - total_cost) * 100, total_cost), 1),
+                fmt(sdiv(revenue, total_cost), 2),
+            ])
+            logger.info("Синк: строка добавлена для источника %r sub=%d cust=%d", src["name"], sub_count, cust_count)
+        except Exception as e:
+            logger.error("Синк: ошибка обработки источника %r: %s", src.get("name"), e, exc_info=True)
 
     # "Не определён"
-    unk_subs = db.table("subscribers").select("id", count="exact").eq("account_id", account_id).is_("source_id", "null").execute()
-    unk_custs = db.table("customers").select("id, amount", count="exact").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
+    try:
+        unk_subs_res = db.table("subscribers").select("id").eq("account_id", account_id).is_("source_id", "null").execute()
+        unk_custs_res = db.table("customers").select("id").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
+        unk_sub_count = len(unk_subs_res.data) if unk_subs_res and unk_subs_res.data else 0
+        unk_cust_count = len(unk_custs_res.data) if unk_custs_res and unk_custs_res.data else 0
+    except Exception:
+        unk_sub_count = 0
+        unk_cust_count = 0
+
     rows_to_write.append([
-        "Не определён",
-        unk_subs.count or 0,
-        unk_custs.count or 0,
+        "Не определён", unk_sub_count, unk_cust_count,
         "—", "", "—", "—", "—", "—", "—", "—",
     ])
 
-    # Записываем данные начиная со строки 2
+    logger.info("Синк: всего строк для записи=%d", len(rows_to_write))
+
+    # Очищаем старые строки и записываем всё заново
+    max_rows = max(len(rows_to_write) + 5, 50)
+    clear_range = f"A2:{chr(ord('A') + len(HEADERS) - 1)}{max_rows + 1}"
+    _retry_gspread(lambda: ws.batch_clear([clear_range]))
+
     if rows_to_write:
         end_row = 1 + len(rows_to_write)
-        range_str = f"A2:{chr(ord('A') + len(HEADERS) - 1)}{end_row}"
-        _retry_gspread(lambda: ws.update(range_str, rows_to_write))
+        write_range = f"A2:{chr(ord('A') + len(HEADERS) - 1)}{end_row}"
+        _retry_gspread(lambda: ws.update(write_range, rows_to_write))
 
-    # Обновляем last_synced_at
-    db.table("settings").update(
-        {"last_synced_at": "now()"}
-    ).eq("account_id", account_id).execute()
-
+    db.table("settings").update({"last_synced_at": "now()"}).eq("account_id", account_id).execute()
     logger.info("Sheets синк завершён для account=%s, строк=%d", account_id, len(rows_to_write))
 
 
-async def sync_to_sheets(account_id: str) -> None:
+async def sync_to_sheets(account_id: str) -> str:
+    """Возвращает пустую строку при успехе или текст ошибки."""
     try:
         await run_sync(lambda: _sync_blocking(account_id))
+        return ""
     except Exception as e:
         logger.error("Ошибка синка Google Sheets: %s", e, exc_info=True)
+        return str(e)
 
 
 async def setup_sheet_for_account(account_id: str) -> bool:

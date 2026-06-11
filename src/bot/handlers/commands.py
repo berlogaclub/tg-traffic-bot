@@ -449,5 +449,8 @@ async def cmd_syncsheets(message: Message) -> None:
         )
         return
 
-    await sync_to_sheets(account["id"])
-    await wait_msg.edit_text("✅ Синхронизация выполнена! Открой таблицу чтобы увидеть данные.")
+    err = await sync_to_sheets(account["id"])
+    if err:
+        await wait_msg.edit_text(f"❌ Ошибка синка: {err}")
+    else:
+        await wait_msg.edit_text("✅ Синхронизация выполнена! Открой таблицу чтобы увидеть данные.")

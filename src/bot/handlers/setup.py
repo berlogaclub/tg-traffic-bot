@@ -295,6 +295,9 @@ async def cmd_setprice(message: Message) -> None:
     await update_account(account["id"], {"product_price": str(price)})
     await message.answer(f"✅ Цена продукта установлена: <b>{price:.0f} ₽</b>", parse_mode="HTML")
 
+    from src.services.sheets_sync import sync_to_sheets
+    await sync_to_sheets(account["id"])
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 

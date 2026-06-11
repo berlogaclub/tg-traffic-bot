@@ -63,13 +63,13 @@ def _start_scheduler(bot: Bot) -> AsyncIOScheduler:
     scheduler.add_job(
         _run_scheduled_sync,
         trigger="interval",
-        minutes=60,
+        minutes=10,
         kwargs={"bot": bot},
         id="sheets_sync",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("APScheduler запущен (синк каждые 60 мин)")
+    logger.info("APScheduler запущен (синк каждые 10 мин)")
     return scheduler
 
 

@@ -118,6 +118,10 @@ async def cmd_newsource(message: Message, bot: Bot) -> None:
             parse_mode="HTML",
         )
 
+        # Автоматически обновляем таблицу
+        from src.services.sheets_sync import sync_to_sheets
+        await sync_to_sheets(account["id"])
+
     except Exception as e:
         logger.error("Необработанная ошибка в /newsource: %s", e, exc_info=True)
         await message.answer(f"❌ Внутренняя ошибка: {e}\n\nПроверь логи Railway.")
@@ -291,7 +295,7 @@ async def cmd_cost(message: Message) -> None:
         )
         return
 
-    cost = await add_cost(
+    await add_cost(
         account_id=account["id"],
         source_id=source["id"],
         amount=amount,
@@ -304,6 +308,9 @@ async def cmd_cost(message: Message) -> None:
         + (f"\nЗаметка: {note}" if note else ""),
         parse_mode="HTML",
     )
+
+    from src.services.sheets_sync import sync_to_sheets
+    await sync_to_sheets(account["id"])
 
 
 # ─── /costs ───────────────────────────────────────────────────────────────────

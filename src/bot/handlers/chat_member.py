@@ -76,6 +76,10 @@ async def on_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
                 "✅ Подписчик записан: user=%s источник=%r канал=%s",
                 tg_user_id, invite_name, chat_id,
             )
+            # Фоновый синк без ожидания
+            import asyncio
+            from src.services.sheets_sync import sync_to_sheets
+            asyncio.create_task(sync_to_sheets(account["id"]))
             return
 
         # Проверяем платный чат
@@ -95,6 +99,9 @@ async def on_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
                 "✅ Клиент записан: user=%s entry_type=%s source=%s чат=%s",
                 tg_user_id, entry_type, source_id, chat_id,
             )
+            import asyncio
+            from src.services.sheets_sync import sync_to_sheets
+            asyncio.create_task(sync_to_sheets(account["id"]))
 
             try:
                 owner_id = account.get("tg_user_id")

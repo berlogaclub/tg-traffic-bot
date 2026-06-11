@@ -146,16 +146,9 @@ async def process_channel_input(message: Message, state: FSMContext, bot: Bot) -
     if not channel_id:
         await message.answer(
             "Не удалось определить ID канала. Отправь числовой ID (например <code>-1001234567890</code>) "
-            "или перешли сообщение из канала.",
+            "или перешли сообщение из канала.\n\n"
+            "💡 Узнать ID: добавь @userinfobot в канал, он пришлёт ID.",
             parse_mode="HTML",
-        )
-        return
-
-    is_admin, can_invite = await check_bot_admin(bot, channel_id)
-    if not is_admin:
-        await message.answer(
-            "⚠️ Бот не является администратором этого канала.\n"
-            "Добавь бота как администратора с правом «Добавление участников», затем попробуй снова."
         )
         return
 
@@ -165,6 +158,18 @@ async def process_channel_input(message: Message, state: FSMContext, bot: Bot) -
 
     await update_account(account["id"], {"free_channel_id": channel_id})
     await state.clear()
+
+    is_admin, can_invite = await check_bot_admin(bot, channel_id)
+
+    if not is_admin:
+        await message.answer(
+            f"✅ Бесплатный канал привязан: <code>{channel_id}</code>\n\n"
+            "⚠️ Бот пока не видит себя администратором — добавь его как администратора с правом «Добавление участников».\n"
+            "После добавления проверь /status.\n\n"
+            "Привяжи платный чат: /setpaid",
+            parse_mode="HTML",
+        )
+        return
 
     invite_warn = ""
     if not can_invite:
@@ -193,15 +198,11 @@ async def process_paid_input(message: Message, state: FSMContext, bot: Bot) -> N
     chat_id = _extract_chat_id(message)
     if not chat_id:
         await message.answer(
-            "Не удалось определить ID чата. Отправь числовой ID или перешли сообщение из чата.",
-        )
-        return
-
-    is_admin, _ = await check_bot_admin(bot, chat_id)
-    if not is_admin:
-        await message.answer(
-            "⚠️ Бот не является администратором этого чата.\n"
-            "Добавь бота как администратора, затем попробуй снова."
+            "Не удалось определить ID чата.\n\n"
+            "Отправь числовой ID (например <code>-1001234567890</code>) "
+            "или перешли сообщение из чата.\n\n"
+            "💡 Узнать ID: добавь @userinfobot в чат, он пришлёт ID.",
+            parse_mode="HTML",
         )
         return
 
@@ -211,6 +212,18 @@ async def process_paid_input(message: Message, state: FSMContext, bot: Bot) -> N
 
     await update_account(account["id"], {"paid_chat_id": chat_id})
     await state.clear()
+
+    # Проверяем права, но не блокируем сохранение
+    is_admin, _ = await check_bot_admin(bot, chat_id)
+    if not is_admin:
+        await message.answer(
+            f"✅ Платный чат привязан: <code>{chat_id}</code>\n\n"
+            "⚠️ Бот пока не видит себя администратором — это нормально если только что добавил.\n"
+            "Подожди 1-2 минуты и проверь /status.\n\n"
+            "Убедись что бот добавлен как <b>администратор</b> с любыми правами.",
+            parse_mode="HTML",
+        )
+        return
 
     await message.answer(
         f"✅ Платный чат привязан: <code>{chat_id}</code>\n\n"

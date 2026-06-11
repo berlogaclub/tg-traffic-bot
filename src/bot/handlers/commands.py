@@ -40,63 +40,70 @@ router = Router()
 
 @router.message(Command("newsource"))
 async def cmd_newsource(message: Message, bot: Bot) -> None:
-    account = await get_account_by_tg_id(message.from_user.id)
-    if not account:
-        await message.answer("Сначала запусти /start")
-        return
-
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer(
-            "Использование: /newsource <i>имя_источника</i>\n"
-            "Пример: <code>/newsource YouTube_видео_1</code>\n\n"
-            "Имя может содержать буквы, цифры и _. Максимум 32 символа.",
-            parse_mode="HTML",
-        )
-        return
-
-    name = args[1].strip()
-    if len(name) > 32:
-        await message.answer(f"Имя слишком длинное ({len(name)} символов), максимум 32.")
-        return
-    if not name:
-        await message.answer("Имя не может быть пустым.")
-        return
-
-    free_channel_id = account.get("free_channel_id")
-    if not free_channel_id:
-        await message.answer("Сначала привяжи бесплатный канал: /setchannel")
-        return
-
-    is_admin, can_invite = await check_bot_admin(bot, free_channel_id)
-    if not is_admin or not can_invite:
-        await message.answer(
-            "⚠️ Бот не является администратором канала или не имеет права «Добавление участников».\n"
-            "Выдай боту это право и попробуй снова."
-        )
-        return
-
-    existing = await get_source_by_name(account["id"], name)
-    if existing:
-        await message.answer(
-            f"Источник с именем <b>{name}</b> уже существует.\n"
-            "Посмотри список: /sources",
-            parse_mode="HTML",
-        )
-        return
-
-    wait_msg = await message.answer("⏳ Создаю ссылку...")
-
     try:
-        result = await bot.create_chat_invite_link(
-            chat_id=free_channel_id,
-            name=name,
-            creates_join_request=False,
-        )
-        invite_link = result.invite_link
-        invite_name = result.name or name
+        account = await get_account_by_tg_id(message.from_user.id)
+        if not account:
+            await message.answer("Сначала запусти /start")
+            return
 
-        source = await create_source(
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await message.answer(
+                "Использование: /newsource <i>имя_источника</i>\n"
+                "Пример: <code>/newsource YouTube_видео_1</code>\n\n"
+                "Имя может содержать буквы, цифры и _. Максимум 32 символа.",
+                parse_mode="HTML",
+            )
+            return
+
+        name = args[1].strip()
+        if len(name) > 32:
+            await message.answer(f"Имя слишком длинное ({len(name)} символов), максимум 32.")
+            return
+        if not name:
+            await message.answer("Имя не может быть пустым.")
+            return
+
+        free_channel_id = account.get("free_channel_id")
+        if not free_channel_id:
+            await message.answer("Сначала привяжи бесплатный канал: /setchannel")
+            return
+
+        existing = await get_source_by_name(account["id"], name)
+        if existing:
+            await message.answer(
+                f"Источник с именем <b>{name}</b> уже существует.\n"
+                "Посмотри список: /sources",
+                parse_mode="HTML",
+            )
+            return
+
+        wait_msg = await message.answer("⏳ Создаю ссылку...")
+
+        try:
+            result = await bot.create_chat_invite_link(
+                chat_id=free_channel_id,
+                name=name,
+                creates_join_request=False,
+            )
+            invite_link = result.invite_link
+            invite_name = result.name or name
+        except TelegramAPIError as e:
+            err = str(e)
+            if "429" in err or "retry" in err.lower():
+                await wait_msg.edit_text("⏳ Telegram перегружен, попробуй через минуту.")
+            elif "not enough rights" in err.lower() or "chat_admin_required" in err.lower():
+                await wait_msg.edit_text(
+                    "⚠️ У бота нет права создавать ссылки.\n\n"
+                    "Открой настройки канала → Администраторы → найди бота → "
+                    "включи галочку <b>«Добавление участников»</b>."
+                )
+            else:
+                logger.error("Ошибка create_chat_invite_link: %s", e)
+                await wait_msg.edit_text(f"❌ Ошибка Telegram: {e}")
+            return
+
+        await create_source(
             account_id=account["id"],
             name=name,
             invite_link=invite_link,
@@ -111,12 +118,9 @@ async def cmd_newsource(message: Message, bot: Bot) -> None:
             parse_mode="HTML",
         )
 
-    except TelegramAPIError as e:
-        if "429" in str(e) or "retry" in str(e).lower():
-            await wait_msg.edit_text("⏳ Telegram перегружен, попробуй через минуту.")
-        else:
-            logger.error("Ошибка создания ссылки: %s", e)
-            await wait_msg.edit_text(f"Ошибка создания ссылки: {e}")
+    except Exception as e:
+        logger.error("Необработанная ошибка в /newsource: %s", e, exc_info=True)
+        await message.answer(f"❌ Внутренняя ошибка: {e}\n\nПроверь логи Railway.")
 
 
 # ─── /sources ─────────────────────────────────────────────────────────────────

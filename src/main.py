@@ -53,7 +53,9 @@ async def _run_scheduled_sync(bot: Bot) -> None:
 
         accounts = await run_sync(_get_accounts)
         for row in accounts:
-            await sync_to_sheets(row["account_id"])
+            ok, msg = await sync_to_sheets(row["account_id"])
+            if not ok:
+                logger.error("Плановый синк account=%s: %s", row["account_id"], msg)
     except Exception as e:
         logger.error("Ошибка планового синка: %s", e, exc_info=True)
 

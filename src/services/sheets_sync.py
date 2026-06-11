@@ -80,29 +80,100 @@ def _ensure_sheet(spreadsheet: gspread.Spreadsheet) -> gspread.Worksheet:
     return ws
 
 
-def _sync_blocking(account_id: str) -> None:
+def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
+    """
+    Строит список строк для записи в таблицу.
+    Возвращает (rows_to_write, warnings).
+    Бросает исключение при любой критической ошибке — не глотает их молча.
+    """
+    warnings: list[str] = []
+
+    _acc = db.table("accounts").select("product_price").eq("id", account_id).limit(1).execute()
+    if not _acc or not _acc.data:
+        raise RuntimeError(f"account_id={account_id!r} не найден в таблице accounts")
+    product_price = float(_acc.data[0].get("product_price") or 0)
+
+    sources_res = db.table("sources").select("id, name").eq("account_id", account_id).execute()
+    sources = sources_res.data if (sources_res and sources_res.data) else []
+    logger.info("Синк: найдено источников=%d account=%s", len(sources), account_id)
+
+    def sdiv(a, b):
+        if not b:
+            return ""
+        return round(a / b, 2)
+
+    rows: list = []
+    for src in sources:
+        src_id = src["id"]
+        src_name = src["name"]
+
+        subs_r = db.table("subscribers").select("id").eq("account_id", account_id).eq("source_id", src_id).execute()
+        sub_count = len(subs_r.data) if (subs_r and subs_r.data) else 0
+
+        custs_r = db.table("customers").select("id, amount").eq("account_id", account_id).eq("source_id", src_id).eq("entry_type", "paid").execute()
+        custs = custs_r.data if (custs_r and custs_r.data) else []
+        cust_count = len(custs)
+
+        costs_r = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", src_id).execute()
+        costs = costs_r.data if (costs_r and costs_r.data) else []
+        total_cost = sum(float(c["amount"]) for c in costs if c.get("amount") is not None)
+
+        revenue = sum(
+            float(c["amount"]) if c.get("amount") is not None else product_price
+            for c in custs
+        )
+
+        conv = fmt(sdiv(cust_count * 100, sub_count) if sub_count else None, 1)
+        cpf = fmt(sdiv(total_cost, sub_count), 2)
+        cac = fmt(sdiv(total_cost, cust_count), 2)
+        romi = fmt(sdiv((revenue - total_cost) * 100, total_cost), 1)
+        payback = fmt(sdiv(revenue, total_cost), 2)
+
+        rows.append([
+            src_name,
+            sub_count,
+            cust_count,
+            conv,
+            fmt(total_cost, 2),
+            fmt(product_price, 2),
+            fmt(revenue, 2),
+            cpf,
+            cac,
+            romi,
+            payback,
+        ])
+        logger.info("Синк: %r sub=%d cust=%d cost=%.2f rev=%.2f", src_name, sub_count, cust_count, total_cost, revenue)
+
+    # "Не определён"
+    unk_s = db.table("subscribers").select("id").eq("account_id", account_id).is_("source_id", "null").execute()
+    unk_c = db.table("customers").select("id").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
+    unk_sub = len(unk_s.data) if (unk_s and unk_s.data) else 0
+    unk_cust = len(unk_c.data) if (unk_c and unk_c.data) else 0
+    rows.append(["Не определён", unk_sub, unk_cust, "—", "", "—", "—", "—", "—", "—", "—"])
+
+    return rows, warnings
+
+
+def _sync_blocking(account_id: str) -> str:
+    """
+    Синхронизирует данные в Google Sheets.
+    Возвращает строку с кратким итогом (для отображения пользователю).
+    Бросает исключение при критической ошибке.
+    """
     gc = _get_gc()
     if not gc:
-        return
+        raise RuntimeError("Google credentials не настроены (GOOGLE_CREDENTIALS_JSON)")
 
     if not config.google_sheet_id:
-        logger.warning("GOOGLE_SHEET_ID не задан, синк пропущен")
-        return
+        raise RuntimeError("GOOGLE_SHEET_ID не задан в переменных окружения")
 
     db = get_db()
-    _acc = db.table("accounts").select("product_price").eq("id", account_id).limit(1).execute()
-    account = (_acc.data[0] if _acc and _acc.data else None)
-    if not account:
-        logger.warning("account_id=%s не найден в БД, синк пропущен", account_id)
-        return
 
     spreadsheet = _retry_gspread(lambda: gc.open_by_key(config.google_sheet_id))
     ws = _ensure_sheet(spreadsheet)
 
+    # Читаем текущие значения колонок ввода (Расход, Цена) — не затираем их
     all_values = _retry_gspread(lambda: ws.get_all_values())
-    # all_values[0] — заголовки, all_values[1:] — данные
-
-    # Читаем текущие значения ввода (Расход и Цена)
     existing_inputs: dict[str, tuple[str, str]] = {}
     for row in all_values[1:]:
         if not row or not row[0]:
@@ -112,137 +183,77 @@ def _sync_blocking(account_id: str) -> None:
         price_val = row[COL_PRICE] if len(row) > COL_PRICE else ""
         existing_inputs[name] = (cost_val, price_val)
 
-    # Применяем расходы из таблицы в БД
+    # Импорт расходов из листа в БД (если заполнены колонки ввода)
     for source_name, (cost_str, price_str) in existing_inputs.items():
-        if source_name == "Не определён":
+        if source_name in ("Не определён",):
             continue
-
         _src = db.table("sources").select("id").eq("account_id", account_id).eq("name", source_name).limit(1).execute()
-        source = (_src.data[0] if _src and _src.data else None)
+        source = _src.data[0] if (_src and _src.data) else None
         if not source:
             continue
-
         if cost_str:
             try:
-                cost_amount = float(cost_str.replace(",", ".").replace(" ", ""))
+                cost_amount = float(cost_str.replace(",", ".").replace("\u00a0", "").replace(" ", ""))
                 if cost_amount > 0:
-                    existing_cost = (
-                        db.table("costs")
-                        .select("id")
-                        .eq("account_id", account_id)
-                        .eq("source_id", source["id"])
-                        .execute()
-                        .data
-                    )
-                    if not existing_cost:
-                        db.table("costs").insert(
-                            {
-                                "account_id": account_id,
-                                "source_id": source["id"],
-                                "amount": str(cost_amount),
-                                "note": "Импорт из Google Sheets",
-                            }
-                        ).execute()
-            except ValueError:
+                    ex = db.table("costs").select("id").eq("account_id", account_id).eq("source_id", source["id"]).execute()
+                    if not (ex and ex.data):
+                        db.table("costs").insert({
+                            "account_id": account_id,
+                            "source_id": source["id"],
+                            "amount": str(cost_amount),
+                            "note": "Импорт из Google Sheets",
+                        }).execute()
+            except (ValueError, TypeError):
                 pass
-
         if price_str:
             try:
-                price = float(price_str.replace(",", ".").replace(" ", ""))
+                price = float(price_str.replace(",", ".").replace("\u00a0", "").replace(" ", ""))
                 if price > 0:
                     db.table("accounts").update({"product_price": str(price)}).eq("id", account_id).execute()
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
 
-    # Пересчитываем метрики (после обновления расходов)
-    _acc2 = db.table("accounts").select("product_price").eq("id", account_id).limit(1).execute()
-    account_fresh = (_acc2.data[0] if _acc2 and _acc2.data else None)
-    product_price = float(account_fresh.get("product_price") or 0) if account_fresh else 0.0
+    # Строим строки и пишем в таблицу
+    rows, warnings = _build_rows(account_id, db)
 
-    sources_res = db.table("sources").select("*").eq("account_id", account_id).execute()
-    sources = sources_res.data if sources_res and sources_res.data else []
-    logger.info("Синк: найдено источников=%d для account=%s", len(sources), account_id)
+    # Восстанавливаем колонки ввода которые были в таблице
+    for row in rows:
+        name = row[0]
+        if name in existing_inputs:
+            saved_cost, saved_price = existing_inputs[name]
+            if saved_cost:
+                row[COL_COST] = saved_cost
+            if saved_price:
+                row[COL_PRICE] = saved_price
 
-    def sdiv(a, b):
-        return round(a / b, 2) if b else ""
-
-    rows_to_write = []
-    for src in sources:
-        try:
-            source_id = src["id"]
-
-            subs_res = db.table("subscribers").select("*").eq("account_id", account_id).eq("source_id", source_id).execute()
-            subs_list = subs_res.data if subs_res and subs_res.data else []
-            sub_count = len(subs_list)
-
-            custs_res = db.table("customers").select("*").eq("account_id", account_id).eq("source_id", source_id).eq("entry_type", "paid").execute()
-            custs_list = custs_res.data if custs_res and custs_res.data else []
-            cust_count = len(custs_list)
-
-            costs_res = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", source_id).execute()
-            costs_list = costs_res.data if costs_res and costs_res.data else []
-            total_cost = sum(float(c["amount"]) for c in costs_list)
-
-            revenue = sum(float(c["amount"]) if c.get("amount") else product_price for c in custs_list)
-
-            input_cost, input_price = existing_inputs.get(src["name"], ("", ""))
-
-            rows_to_write.append([
-                src["name"],
-                sub_count,
-                cust_count,
-                fmt(sdiv(cust_count * 100, sub_count) if sub_count else None, 1),
-                input_cost or fmt(total_cost, 2),
-                input_price or fmt(product_price, 2),
-                fmt(revenue, 2),
-                fmt(sdiv(total_cost, sub_count), 2),
-                fmt(sdiv(total_cost, cust_count), 2),
-                fmt(sdiv((revenue - total_cost) * 100, total_cost), 1),
-                fmt(sdiv(revenue, total_cost), 2),
-            ])
-            logger.info("Синк: строка добавлена для источника %r sub=%d cust=%d", src["name"], sub_count, cust_count)
-        except Exception as e:
-            logger.error("Синк: ошибка обработки источника %r: %s", src.get("name"), e, exc_info=True)
-
-    # "Не определён"
-    try:
-        unk_subs_res = db.table("subscribers").select("id").eq("account_id", account_id).is_("source_id", "null").execute()
-        unk_custs_res = db.table("customers").select("id").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
-        unk_sub_count = len(unk_subs_res.data) if unk_subs_res and unk_subs_res.data else 0
-        unk_cust_count = len(unk_custs_res.data) if unk_custs_res and unk_custs_res.data else 0
-    except Exception:
-        unk_sub_count = 0
-        unk_cust_count = 0
-
-    rows_to_write.append([
-        "Не определён", unk_sub_count, unk_cust_count,
-        "—", "", "—", "—", "—", "—", "—", "—",
-    ])
-
-    logger.info("Синк: всего строк для записи=%d", len(rows_to_write))
-
-    # Очищаем старые строки и записываем всё заново
-    max_rows = max(len(rows_to_write) + 5, 50)
-    clear_range = f"A2:{chr(ord('A') + len(HEADERS) - 1)}{max_rows + 1}"
+    # Очищаем и пишем заново
+    last_col = chr(ord("A") + len(HEADERS) - 1)
+    clear_range = f"A2:{last_col}200"
     _retry_gspread(lambda: ws.batch_clear([clear_range]))
 
-    if rows_to_write:
-        end_row = 1 + len(rows_to_write)
-        write_range = f"A2:{chr(ord('A') + len(HEADERS) - 1)}{end_row}"
-        _retry_gspread(lambda: ws.update(write_range, rows_to_write))
+    end_row = 1 + len(rows)
+    write_range = f"A2:{last_col}{end_row}"
+    _retry_gspread(lambda: ws.update(write_range, rows))
 
     db.table("settings").update({"last_synced_at": "now()"}).eq("account_id", account_id).execute()
-    logger.info("Sheets синк завершён для account=%s, строк=%d", account_id, len(rows_to_write))
+
+    src_count = len(rows) - 1  # без "Не определён"
+    logger.info("Синк завершён account=%s src=%d", account_id, src_count)
+    return f"Записано источников: {src_count}, строк: {len(rows)}"
 
 
-async def sync_to_sheets(account_id: str) -> str:
-    """Возвращает пустую строку при успехе или текст ошибки."""
+async def sync_to_sheets(account_id: str) -> tuple[bool, str]:
+    """
+    Возвращает (success, message).
+    success=True + итоговое сообщение при успехе.
+    success=False + текст ошибки при провале.
+    """
     try:
-        await run_sync(lambda: _sync_blocking(account_id))
-        return ""
+        result = await run_sync(lambda: _sync_blocking(account_id))
+        return True, result or "Готово"
     except Exception as e:
         logger.error("Ошибка синка Google Sheets: %s", e, exc_info=True)
-        return str(e)
+        return False, str(e)
 
 
 async def setup_sheet_for_account(account_id: str) -> bool:

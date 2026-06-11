@@ -296,7 +296,9 @@ async def cmd_setprice(message: Message) -> None:
     await message.answer(f"✅ Цена продукта установлена: <b>{price:.0f} ₽</b>", parse_mode="HTML")
 
     from src.services.sheets_sync import sync_to_sheets
-    await sync_to_sheets(account["id"])
+    ok, sync_msg = await sync_to_sheets(account["id"])
+    if not ok:
+        logger.warning("Автосинк после setprice: %s", sync_msg)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

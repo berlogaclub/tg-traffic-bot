@@ -118,9 +118,11 @@ async def cmd_newsource(message: Message, bot: Bot) -> None:
             parse_mode="HTML",
         )
 
-        # Автоматически обновляем таблицу
+        # Автоматически обновляем таблицу (ошибки не показываем — команда уже выполнена)
         from src.services.sheets_sync import sync_to_sheets
-        await sync_to_sheets(account["id"])
+        ok, sync_msg = await sync_to_sheets(account["id"])
+        if not ok:
+            logger.warning("Автосинк после /newsource: %s", sync_msg)
 
     except Exception as e:
         logger.error("Необработанная ошибка в /newsource: %s", e, exc_info=True)
@@ -310,7 +312,9 @@ async def cmd_cost(message: Message) -> None:
     )
 
     from src.services.sheets_sync import sync_to_sheets
-    await sync_to_sheets(account["id"])
+    ok, sync_msg = await sync_to_sheets(account["id"])
+    if not ok:
+        logger.warning("Автосинк после /cost: %s", sync_msg)
 
 
 # ─── /costs ───────────────────────────────────────────────────────────────────
@@ -429,6 +433,62 @@ async def cmd_debug(message: Message) -> None:
         await message.answer(f"Ошибка БД: {e}")
 
 
+# ─── /debugsync ──────────────────────────────────────────────────────────────
+
+@router.message(Command("debugsync"))
+async def cmd_debugsync(message: Message) -> None:
+    """Диагностика: что именно синк видит в БД, шаг за шагом."""
+    account = await get_account_by_tg_id(message.from_user.id)
+    if not account:
+        await message.answer("Аккаунт не найден. Запусти /start")
+        return
+
+    wait_msg = await message.answer("⏳ Диагностика синка...")
+
+    try:
+        from src.core.database import get_db, run_sync
+        from src.core.config import config
+
+        def _diagnose():
+            db = get_db()
+            acc_id = account["id"]
+            lines = []
+
+            # 1. Конфиг
+            has_creds = bool(config.google_credentials)
+            has_sheet = bool(config.google_sheet_id)
+            lines.append(f"✅ Credentials: {'есть' if has_creds else '❌ НЕТ'}")
+            lines.append(f"✅ Sheet ID: {config.google_sheet_id or '❌ НЕТ'}")
+
+            # 2. Account
+            acc_r = db.table("accounts").select("product_price").eq("id", acc_id).limit(1).execute()
+            acc_data = acc_r.data[0] if (acc_r and acc_r.data) else None
+            lines.append(f"Account: {acc_data}")
+
+            # 3. Sources
+            src_r = db.table("sources").select("id, name").eq("account_id", acc_id).execute()
+            sources = src_r.data if (src_r and src_r.data) else []
+            lines.append(f"Источников в БД: {len(sources)}")
+            for s in sources:
+                lines.append(f"  • {s['name']} (id={s['id'][:8]}...)")
+
+            # 4. По каждому источнику
+            for s in sources:
+                subs_r = db.table("subscribers").select("id").eq("account_id", acc_id).eq("source_id", s["id"]).execute()
+                sub_cnt = len(subs_r.data) if (subs_r and subs_r.data) else 0
+                custs_r = db.table("customers").select("id").eq("account_id", acc_id).eq("source_id", s["id"]).execute()
+                cust_cnt = len(custs_r.data) if (custs_r and custs_r.data) else 0
+                lines.append(f"  {s['name']}: sub={sub_cnt} cust={cust_cnt}")
+
+            return "\n".join(lines)
+
+        result = await run_sync(_diagnose)
+        await wait_msg.edit_text(f"<b>🔬 Диагностика синка</b>\n\n<code>{result}</code>", parse_mode="HTML")
+
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Ошибка диагностики: <code>{e}</code>", parse_mode="HTML")
+
+
 # ─── /syncsheets ─────────────────────────────────────────────────────────────
 
 @router.message(Command("syncsheets"))
@@ -449,8 +509,8 @@ async def cmd_syncsheets(message: Message) -> None:
         )
         return
 
-    err = await sync_to_sheets(account["id"])
-    if err:
-        await wait_msg.edit_text(f"❌ Ошибка синка: {err}")
+    ok, msg = await sync_to_sheets(account["id"])
+    if ok:
+        await wait_msg.edit_text(f"✅ Синхронизация выполнена!\n{msg}\n\nОткрой таблицу чтобы увидеть данные.")
     else:
-        await wait_msg.edit_text("✅ Синхронизация выполнена! Открой таблицу чтобы увидеть данные.")
+        await wait_msg.edit_text(f"❌ Ошибка синка:\n<code>{msg}</code>", parse_mode="HTML")

@@ -90,15 +90,10 @@ def _sync_blocking(account_id: str) -> None:
         return
 
     db = get_db()
-    account = (
-        db.table("accounts")
-        .select("product_price")
-        .eq("id", account_id)
-        .maybe_single()
-        .execute()
-        .data
-    )
+    _acc = db.table("accounts").select("product_price").eq("id", account_id).limit(1).execute()
+    account = (_acc.data[0] if _acc and _acc.data else None)
     if not account:
+        logger.warning("account_id=%s не найден в БД, синк пропущен", account_id)
         return
 
     spreadsheet = _retry_gspread(lambda: gc.open_by_key(config.google_sheet_id))
@@ -122,15 +117,8 @@ def _sync_blocking(account_id: str) -> None:
         if source_name == "Не определён":
             continue
 
-        source = (
-            db.table("sources")
-            .select("id")
-            .eq("account_id", account_id)
-            .eq("name", source_name)
-            .maybe_single()
-            .execute()
-            .data
-        )
+        _src = db.table("sources").select("id").eq("account_id", account_id).eq("name", source_name).limit(1).execute()
+        source = (_src.data[0] if _src and _src.data else None)
         if not source:
             continue
 
@@ -167,9 +155,8 @@ def _sync_blocking(account_id: str) -> None:
                 pass
 
     # Пересчитываем метрики (после обновления расходов)
-    account_fresh = (
-        db.table("accounts").select("product_price").eq("id", account_id).maybe_single().execute().data
-    )
+    _acc2 = db.table("accounts").select("product_price").eq("id", account_id).limit(1).execute()
+    account_fresh = (_acc2.data[0] if _acc2 and _acc2.data else None)
     product_price = float(account_fresh.get("product_price") or 0) if account_fresh else 0.0
 
     sources = db.table("sources").select("id, name").eq("account_id", account_id).order("created_at").execute().data or []

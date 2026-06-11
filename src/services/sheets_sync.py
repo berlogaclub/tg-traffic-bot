@@ -116,10 +116,10 @@ def _build_rows(account_id: str, db) -> tuple[list, list[str]]:
 
         costs_r = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", src_id).execute()
         costs = costs_r.data if (costs_r and costs_r.data) else []
-        total_cost = sum(float(c["amount"]) for c in costs if c.get("amount") is not None)
+        total_cost = sum(float(c["amount"]) for c in costs if c.get("amount") not in (None, ""))
 
         revenue = sum(
-            float(c["amount"]) if c.get("amount") is not None else product_price
+            float(c["amount"]) if c.get("amount") not in (None, "") else product_price
             for c in custs
         )
 

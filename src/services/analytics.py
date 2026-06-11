@@ -162,12 +162,17 @@ async def compute_metrics(account_id: str) -> list[SourceMetrics]:
     return await run_sync(_query)
 
 
-def fmt(value: Optional[float], decimals: int = 0, suffix: str = "") -> str:
-    if value is None:
+def fmt(value, decimals: int = 0, suffix: str = "") -> str:
+    """Форматирует число. Принимает float, int, str (Supabase numeric) или None."""
+    if value is None or value == "":
+        return "—"
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
         return "—"
     if decimals == 0:
-        return f"{value:,.0f}{suffix}"
-    return f"{value:,.{decimals}f}{suffix}"
+        return f"{v:,.0f}{suffix}"
+    return f"{v:,.{decimals}f}{suffix}"
 
 
 def format_stats_table(metrics: list[SourceMetrics]) -> str:

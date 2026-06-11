@@ -118,14 +118,14 @@ def _compute_source_metrics(
 async def compute_metrics(account_id: str) -> list[SourceMetrics]:
     def _query():
         db = get_db()
-        account = (
+        _acc_res = (
             db.table("accounts")
             .select("product_price")
             .eq("id", account_id)
-            .maybe_single()
+            .limit(1)
             .execute()
-            .data
         )
+        account = (_acc_res.data[0] if _acc_res and _acc_res.data else None)
         product_price = float(account.get("product_price") or 0) if account else 0.0
 
         sources = (

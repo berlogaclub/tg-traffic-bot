@@ -10,6 +10,16 @@ from src.core.database import get_db, run_sync
 logger = logging.getLogger(__name__)
 
 
+def _one(result) -> Optional[dict]:
+    """Безопасно достаёт первую запись из результата Supabase."""
+    if result is None:
+        return None
+    data = getattr(result, "data", None)
+    if not data:
+        return None
+    return data[0] if isinstance(data, list) else data
+
+
 async def get_or_create_account(tg_user_id: int) -> dict:
     def _query():
         db = get_db()
@@ -18,7 +28,7 @@ async def get_or_create_account(tg_user_id: int) -> dict:
             .upsert({"tg_user_id": tg_user_id}, on_conflict="tg_user_id")
             .execute()
         )
-        return result.data[0] if result.data else None
+        return _one(result)
 
     account = await run_sync(_query)
     if account:
@@ -39,10 +49,10 @@ async def get_account_by_tg_id(tg_user_id: int) -> Optional[dict]:
             db.table("accounts")
             .select("*")
             .eq("tg_user_id", tg_user_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 
@@ -54,10 +64,10 @@ async def get_account_by_free_channel(channel_id: int) -> Optional[dict]:
             db.table("accounts")
             .select("*")
             .eq("free_channel_id", channel_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 
@@ -69,10 +79,10 @@ async def get_account_by_paid_chat(chat_id: int) -> Optional[dict]:
             db.table("accounts")
             .select("*")
             .eq("paid_chat_id", chat_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 
@@ -92,10 +102,10 @@ async def find_source_by_invite_name(account_id: str, invite_name: str) -> Optio
             .select("*")
             .eq("account_id", account_id)
             .eq("invite_name", invite_name)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 
@@ -136,14 +146,10 @@ async def attribute_subscriber(
         }
         result = (
             db.table("subscribers")
-            .upsert(
-                row,
-                on_conflict="account_id,tg_user_id",
-                ignore_duplicates=False,
-            )
+            .upsert(row, on_conflict="account_id,tg_user_id", ignore_duplicates=False)
             .execute()
         )
-        return result.data[0] if result.data else row
+        return _one(result) or row
 
     subscriber = await run_sync(_upsert)
 
@@ -177,10 +183,10 @@ async def attribute_customer(
             .select("id, source_id")
             .eq("account_id", account_id)
             .eq("tg_user_id", tg_user_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     subscriber = await run_sync(_find_subscriber)
 
@@ -210,7 +216,7 @@ async def attribute_customer(
             .upsert(row, on_conflict="account_id,tg_user_id", ignore_duplicates=True)
             .execute()
         )
-        return result.data[0] if result.data else row
+        return _one(result) or row
 
     customer = await run_sync(_upsert)
 
@@ -264,7 +270,7 @@ async def create_source(account_id: str, name: str, invite_link: str, invite_nam
             )
             .execute()
         )
-        return result.data[0]
+        return _one(result) or {}
 
     return await run_sync(_insert)
 
@@ -272,8 +278,14 @@ async def create_source(account_id: str, name: str, invite_link: str, invite_nam
 async def get_sources(account_id: str) -> list[dict]:
     def _query():
         db = get_db()
-        result = db.table("sources").select("*").eq("account_id", account_id).order("created_at").execute()
-        return result.data or []
+        result = (
+            db.table("sources")
+            .select("*")
+            .eq("account_id", account_id)
+            .order("created_at")
+            .execute()
+        )
+        return result.data if result else []
 
     return await run_sync(_query)
 
@@ -286,10 +298,10 @@ async def get_source_by_name(account_id: str, name: str) -> Optional[dict]:
             .select("*")
             .eq("account_id", account_id)
             .eq("name", name)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 
@@ -325,7 +337,7 @@ async def add_cost(
             )
             .execute()
         )
-        return result.data[0]
+        return _one(result) or {}
 
     return await run_sync(_insert)
 
@@ -340,7 +352,7 @@ async def get_costs(account_id: str) -> list[dict]:
             .order("created_at", desc=True)
             .execute()
         )
-        return result.data or []
+        return result.data if result else []
 
     return await run_sync(_query)
 
@@ -359,10 +371,10 @@ async def get_settings(account_id: str) -> Optional[dict]:
             db.table("settings")
             .select("*")
             .eq("account_id", account_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return result.data
+        return _one(result)
 
     return await run_sync(_query)
 

@@ -83,49 +83,13 @@ async def on_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
             return
 
         # Проверяем платный чат
+        # ОТКЛЮЧЕНО: запись продаж и уведомления временно выключены
         account = await get_account_by_paid_chat(chat_id)
         if account:
-            product_price = float(account.get("product_price") or 0)
-            customer = await attribute_customer(
-                account_id=account["id"],
-                tg_user_id=tg_user_id,
-                product_price=product_price,
-                raw_event={"chat_id": chat_id},
-            )
-            entry_type = customer.get("entry_type", "paid")
-            source_id = customer.get("source_id")
-
             logger.info(
-                "✅ Клиент записан: user=%s entry_type=%s source=%s чат=%s",
-                tg_user_id, entry_type, source_id, chat_id,
+                "ℹ️ Вступление в платный чат user=%s chat=%s — запись продаж отключена",
+                tg_user_id, chat_id,
             )
-            import asyncio
-            from src.services.sheets_sync import sync_to_sheets
-            asyncio.create_task(sync_to_sheets(account["id"]))
-
-            try:
-                owner_id = account.get("tg_user_id")
-                if owner_id:
-                    import asyncio
-                    from src.core.database import get_db
-                    from src.services.attribution import _one
-
-                    def _get_source_name():
-                        if not source_id:
-                            return None
-                        db = get_db()
-                        result = db.table("sources").select("name").eq("id", source_id).limit(1).execute()
-                        row = _one(result)
-                        return row.get("name") if row else "?"
-
-                    src_name = await asyncio.to_thread(_get_source_name)
-                    if src_name:
-                        msg = f"💰 Новая продажа!\nИсточник: <b>{src_name}</b>\nСумма: <b>{product_price:.0f} ₽</b>"
-                    else:
-                        msg = f"💰 Новая продажа!\nИсточник: <b>не определён</b> ({entry_type})\nСумма: <b>{product_price:.0f} ₽</b>"
-                    await bot.send_message(owner_id, msg, parse_mode="HTML")
-            except Exception as e:
-                logger.warning("Не удалось отправить уведомление владельцу: %s", e)
             return
 
         logger.debug("chat_member из неизвестного чата %s — игнорируем", chat_id)

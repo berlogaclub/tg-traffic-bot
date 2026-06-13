@@ -4,9 +4,9 @@
 """
 import logging
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, LEAVE_TRANSITION
-from aiogram.types import ChatMemberUpdated
+from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.services.attribution import (
     attribute_customer,
@@ -117,18 +117,32 @@ async def on_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
                 from src.core.database import get_db
                 from src.services.attribution import _one
 
-                def _get_source_name():
+                def _get_customer_and_source():
                     db = get_db()
+                    # id клиента нужен для кнопки
+                    cust_r = db.table("customers").select("id").eq("account_id", account["id"]).eq("tg_user_id", tg_user_id).limit(1).execute()
+                    cust_id = _one(cust_r).get("id") if _one(cust_r) else None
+                    # имя источника
                     result = db.table("sources").select("name").eq("id", source_id).limit(1).execute()
                     row = _one(result)
-                    return row.get("name") if row else "?"
+                    return cust_id, row.get("name") if row else "?"
 
-                src_name = await asyncio.to_thread(_get_source_name)
-                if src_name:
-                    msg = f"💰 Новая продажа!\nИсточник: <b>{src_name}</b>\nСумма: <b>{product_price:.0f} ₽</b>"
-                else:
-                    msg = f"💰 Новая продажа!\nИсточник: <b>не определён</b>\nСумма: <b>{product_price:.0f} ₽</b>"
-                await bot.send_message(NOTIFY_OWNER_ID, msg, parse_mode="HTML")
+                import asyncio
+                cust_id, src_name = await asyncio.to_thread(_get_customer_and_source)
+
+                msg = (
+                    f"💰 <b>Новая продажа!</b>\n"
+                    f"Источник: <b>{src_name}</b>\n"
+                    f"Сумма: <b>{product_price:.0f} ₽</b>"
+                )
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="🚫 УБРАТЬ ИЗ УЧЁТА",
+                        callback_data=f"sale_exclude:{cust_id}:{account['id']}",
+                    )
+                ]]) if cust_id else None
+
+                await bot.send_message(NOTIFY_OWNER_ID, msg, parse_mode="HTML", reply_markup=kb)
             except Exception as e:
                 logger.warning("Не удалось отправить уведомление: %s", e)
             return
@@ -163,3 +177,78 @@ async def on_my_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
 
     elif new_status == "administrator":
         logger.info("Бот стал администратором в чате %s", chat_id)
+
+
+# ─── Callback: исключить / включить продажу ───────────────────────────────────
+
+def _sale_keyboard(cust_id: str, account_id: str, excluded: bool) -> InlineKeyboardMarkup:
+    if excluded:
+        btn = InlineKeyboardButton(
+            text="✅ УЧИТЫВАТЬ",
+            callback_data=f"sale_include:{cust_id}:{account_id}",
+        )
+    else:
+        btn = InlineKeyboardButton(
+            text="🚫 УБРАТЬ ИЗ УЧЁТА",
+            callback_data=f"sale_exclude:{cust_id}:{account_id}",
+        )
+    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+
+@router.callback_query(F.data.startswith("sale_exclude:"))
+async def cb_sale_exclude(callback: CallbackQuery, bot: Bot) -> None:
+    parts = callback.data.split(":")
+    cust_id, account_id = parts[1], parts[2]
+    await _toggle_excluded(callback, bot, cust_id, account_id, exclude=True)
+
+
+@router.callback_query(F.data.startswith("sale_include:"))
+async def cb_sale_include(callback: CallbackQuery, bot: Bot) -> None:
+    parts = callback.data.split(":")
+    cust_id, account_id = parts[1], parts[2]
+    await _toggle_excluded(callback, bot, cust_id, account_id, exclude=False)
+
+
+async def _toggle_excluded(
+    callback: CallbackQuery, bot: Bot, cust_id: str, account_id: str, exclude: bool
+) -> None:
+    from src.core.database import get_db, run_sync
+    from src.services.sheets_sync import sync_to_sheets
+
+    def _update():
+        db = get_db()
+        db.table("customers").update({"excluded": exclude}).eq("id", cust_id).execute()
+
+    try:
+        await run_sync(_update)
+    except Exception as e:
+        logger.error("Ошибка toggle_excluded cust=%s: %s", cust_id, e)
+        await callback.answer("Ошибка обновления", show_alert=True)
+        return
+
+    # Обновляем кнопку на сообщении
+    new_kb = _sale_keyboard(cust_id, account_id, excluded=exclude)
+    status_line = "\n<i>🚫 Убрана из учёта</i>" if exclude else ""
+    try:
+        # Переписываем только клавиатуру, текст оставляем + добавляем статус
+        original = callback.message.html_text or callback.message.text or ""
+        # Убираем предыдущую статус-строку если она была
+        clean = original.replace("\n<i>🚫 Убрана из учёта</i>", "").replace("\n🚫 Убрана из учёта", "")
+        await callback.message.edit_text(
+            clean + status_line,
+            parse_mode="HTML",
+            reply_markup=new_kb,
+        )
+    except Exception:
+        # Если текст не изменился — редактируем только клавиатуру
+        try:
+            await callback.message.edit_reply_markup(reply_markup=new_kb)
+        except Exception:
+            pass
+
+    # Обновляем таблицу в фоне
+    import asyncio
+    asyncio.create_task(sync_to_sheets(account_id))
+
+    label = "Убрана из учёта" if exclude else "Снова учитывается"
+    await callback.answer(label)

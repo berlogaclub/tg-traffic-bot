@@ -194,7 +194,7 @@ def _fetch_db_data(account_id: str, db) -> tuple[dict, list[dict], int, int]:
         subs_r = db.table("subscribers").select("id").eq("account_id", account_id).eq("source_id", src_id).execute()
         sub_count = len(subs_r.data) if (subs_r and subs_r.data) else 0
 
-        custs_r = db.table("customers").select("id").eq("account_id", account_id).eq("source_id", src_id).eq("entry_type", "paid").execute()
+        custs_r = db.table("customers").select("id").eq("account_id", account_id).eq("source_id", src_id).eq("entry_type", "paid").eq("excluded", False).execute()
         cust_count = len(custs_r.data) if (custs_r and custs_r.data) else 0
 
         costs_r = db.table("costs").select("amount").eq("account_id", account_id).eq("source_id", src_id).execute()

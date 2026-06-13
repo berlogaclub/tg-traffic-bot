@@ -54,6 +54,7 @@ def _compute_source_metrics(
             .eq("account_id", account_id)
             .eq("source_id", source_id)
             .eq("entry_type", "paid")
+            .eq("excluded", False)
             .execute()
         )
         costs_result = (
@@ -77,6 +78,7 @@ def _compute_source_metrics(
             .eq("account_id", account_id)
             .is_("source_id", "null")
             .eq("entry_type", "paid")
+            .eq("excluded", False)
             .execute()
         )
         costs_result = None

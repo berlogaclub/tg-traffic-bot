@@ -6,7 +6,9 @@ import logging
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.bot.keyboards.inline import (
     cancel_keyboard,
@@ -36,10 +38,14 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+class SourceStates(StatesGroup):
+    waiting_for_link_type = State()
+
+
 # ─── /newsource ──────────────────────────────────────────────────────────────
 
 @router.message(Command("newsource"))
-async def cmd_newsource(message: Message, bot: Bot) -> None:
+async def cmd_newsource(message: Message, state: FSMContext, bot: Bot) -> None:
     try:
         account = await get_account_by_tg_id(message.from_user.id)
         if not account:
@@ -78,55 +84,98 @@ async def cmd_newsource(message: Message, bot: Bot) -> None:
             )
             return
 
-        wait_msg = await message.answer("⏳ Создаю ссылку...")
+        # Сохраняем имя в FSM и спрашиваем тип ссылки
+        await state.set_state(SourceStates.waiting_for_link_type)
+        await state.update_data(source_name=name, account_id=account["id"], free_channel_id=free_channel_id)
 
-        try:
-            result = await bot.create_chat_invite_link(
-                chat_id=free_channel_id,
-                name=name,
-                creates_join_request=False,
-            )
-            invite_link = result.invite_link
-            invite_name = result.name or name
-        except TelegramAPIError as e:
-            err = str(e)
-            if "429" in err or "retry" in err.lower():
-                await wait_msg.edit_text("⏳ Telegram перегружен, попробуй через минуту.")
-            elif "not enough rights" in err.lower() or "chat_admin_required" in err.lower():
-                await wait_msg.edit_text(
-                    "⚠️ У бота нет права создавать ссылки.\n\n"
-                    "Открой настройки канала → Администраторы → найди бота → "
-                    "включи галочку <b>«Добавление участников»</b>."
-                )
-            else:
-                logger.error("Ошибка create_chat_invite_link: %s", e)
-                await wait_msg.edit_text(f"❌ Ошибка Telegram: {e}")
-            return
-
-        await create_source(
-            account_id=account["id"],
-            name=name,
-            invite_link=invite_link,
-            invite_name=invite_name,
-        )
-
-        await wait_msg.edit_text(
-            f"✅ Источник создан!\n\n"
-            f"📛 Имя: <b>{name}</b>\n"
-            f"🔗 Ссылка:\n<code>{invite_link}</code>\n\n"
-            f"Используй эту ссылку в рекламе — бот автоматически засчитает источник.",
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔗 БЕЗ ЗАЯВКИ — сразу вступление",
+                callback_data="linktype:direct",
+            )],
+            [InlineKeyboardButton(
+                text="📋 С ЗАЯВКОЙ — нужно одобрить вручную",
+                callback_data="linktype:request",
+            )],
+        ])
+        await message.answer(
+            f"📛 Источник: <b>{name}</b>\n\n"
+            "Выбери тип ссылки:",
             parse_mode="HTML",
+            reply_markup=kb,
         )
-
-        # Автоматически обновляем таблицу (ошибки не показываем — команда уже выполнена)
-        from src.services.sheets_sync import sync_to_sheets
-        ok, sync_msg = await sync_to_sheets(account["id"])
-        if not ok:
-            logger.warning("Автосинк после /newsource: %s", sync_msg)
 
     except Exception as e:
         logger.error("Необработанная ошибка в /newsource: %s", e, exc_info=True)
         await message.answer(f"❌ Внутренняя ошибка: {e}\n\nПроверь логи Railway.")
+
+
+@router.callback_query(F.data.startswith("linktype:"), SourceStates.waiting_for_link_type)
+async def cb_linktype(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    link_type = callback.data.split(":")[1]  # "direct" или "request"
+    join_request = (link_type == "request")
+
+    data = await state.get_data()
+    await state.clear()
+
+    name = data.get("source_name")
+    account_id = data.get("account_id")
+    free_channel_id = data.get("free_channel_id")
+
+    label = "С ЗАЯВКОЙ" if join_request else "БЕЗ ЗАЯВКИ"
+    await callback.message.edit_text(
+        f"📛 Источник: <b>{name}</b>\nТип: <b>{label}</b>\n\n⏳ Создаю ссылку...",
+        parse_mode="HTML",
+    )
+
+    try:
+        result = await bot.create_chat_invite_link(
+            chat_id=free_channel_id,
+            name=name,
+            creates_join_request=join_request,
+        )
+        invite_link = result.invite_link
+        invite_name = result.name or name
+    except TelegramAPIError as e:
+        err = str(e)
+        if "429" in err or "retry" in err.lower():
+            await callback.message.edit_text("⏳ Telegram перегружен, попробуй через минуту.")
+        elif "not enough rights" in err.lower() or "chat_admin_required" in err.lower():
+            await callback.message.edit_text(
+                "⚠️ У бота нет права создавать ссылки.\n\n"
+                "Открой настройки канала → Администраторы → найди бота → "
+                "включи галочку <b>«Добавление участников»</b>.",
+                parse_mode="HTML",
+            )
+        else:
+            logger.error("Ошибка create_chat_invite_link: %s", e)
+            await callback.message.edit_text(f"❌ Ошибка Telegram: {e}")
+        await callback.answer()
+        return
+
+    await create_source(
+        account_id=account_id,
+        name=name,
+        invite_link=invite_link,
+        invite_name=invite_name,
+        join_request=join_request,
+    )
+
+    link_desc = "заявка на вступление (нужно одобрить)" if join_request else "прямое вступление"
+    await callback.message.edit_text(
+        f"✅ Источник создан!\n\n"
+        f"📛 Имя: <b>{name}</b>\n"
+        f"🔗 Тип: <b>{label}</b> ({link_desc})\n"
+        f"🔗 Ссылка:\n<code>{invite_link}</code>\n\n"
+        f"Используй эту ссылку в рекламе — бот автоматически засчитает источник.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+    # Автосинк таблицы
+    ok, sync_msg = await sync_to_sheets(account_id)
+    if not ok:
+        logger.warning("Автосинк после /newsource: %s", sync_msg)
 
 
 # ─── /sources ─────────────────────────────────────────────────────────────────

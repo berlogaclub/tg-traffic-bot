@@ -294,7 +294,7 @@ async def _insert_event(
     await run_sync(_insert)
 
 
-async def create_source(account_id: str, name: str, invite_link: str, invite_name: str) -> dict:
+async def create_source(account_id: str, name: str, invite_link: str, invite_name: str, join_request: bool = False) -> dict:
     def _insert():
         db = get_db()
         result = db.table("sources").insert(
@@ -303,6 +303,7 @@ async def create_source(account_id: str, name: str, invite_link: str, invite_nam
                 "name": name,
                 "invite_link": invite_link,
                 "invite_name": invite_name,
+                "join_request": join_request,
             }
         ).execute()
         if not result or not result.data:

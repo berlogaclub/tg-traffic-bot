@@ -30,25 +30,26 @@ SHEET_NAME = "Sources"
 HEADERS = [
     "Источник",            # A=0  — имя источника
     "Ссылка",              # B=1  — invite-ссылка (автозаполнение)
-    "Ссылка на площадку",  # C=2  — ручной ввод, сохраняется
-    "Подписчики",          # D=3  — из БД
-    "Клиенты",             # E=4  — из БД
-    "Конв.%",              # F=5  — ФОРМУЛА
-    "Расход",              # G=6  — ручной ввод
-    "Цена продукта",       # H=7  — ручной ввод
-    "Выручка",             # I=8  — ФОРМУЛА
-    "CPF",                 # J=9  — ФОРМУЛА
-    "CAC",                 # K=10 — ФОРМУЛА
-    "ROMI%",               # L=11 — ФОРМУЛА
-    "Окуп.",               # M=12 — ФОРМУЛА
+    "Тип ссылки",          # C=2  — БЕЗ ЗАЯВКИ / С ЗАЯВКОЙ
+    "Ссылка на площадку",  # D=3  — ручной ввод, сохраняется
+    "Подписчики",          # E=4  — из БД
+    "Клиенты",             # F=5  — из БД
+    "Конв.%",              # G=6  — ФОРМУЛА
+    "Расход",              # H=7  — ручной ввод
+    "Цена продукта",       # I=8  — ручной ввод
+    "Выручка",             # J=9  — ФОРМУЛА
+    "CPF",                 # K=10 — ФОРМУЛА
+    "CAC",                 # L=11 — ФОРМУЛА
+    "ROMI%",               # M=12 — ФОРМУЛА
+    "Окуп.",               # N=13 — ФОРМУЛА
 ]
 
-LAST_COL = chr(ord("A") + len(HEADERS) - 1)  # "M"
+LAST_COL = chr(ord("A") + len(HEADERS) - 1)  # "N"
 
 # Индексы колонок ввода (0-based)
-COL_AD_LINK = 2   # C — «Ссылка на площадку»
-COL_COST    = 6   # G — «Расход»
-COL_PRICE   = 7   # H — «Цена продукта»
+COL_AD_LINK = 3   # D — «Ссылка на площадку»
+COL_COST    = 7   # H — «Расход»
+COL_PRICE   = 8   # I — «Цена продукта»
 
 # Цвета для форматирования (RGB 0.0–1.0)
 COLOR_HEADER  = {"red": 0.16, "green": 0.32, "blue": 0.58}   # тёмно-синий
@@ -96,37 +97,34 @@ def _ensure_sheet(spreadsheet: gspread.Spreadsheet) -> gspread.Worksheet:
 # ─────────────────────────── Формулы ──────────────────────────────────────────
 
 def _row_formulas(r: int) -> dict:
-    """Возвращает формулы для строки r (1-based). Используется Google Sheets синтаксис."""
+    """Формулы для строки r. Колонки: E=Подписчики, F=Клиенты, H=Расход, I=Цена, J=Выручка."""
     return {
-        "conv":    f'=IFERROR(ROUND(E{r}/D{r}*100,1),"—")',
-        "revenue": f'=IFERROR(ROUND(E{r}*H{r},2),"—")',
-        "cpf":     f'=IFERROR(ROUND(G{r}/D{r},2),"—")',
-        "cac":     f'=IFERROR(ROUND(G{r}/E{r},2),"—")',
-        "romi":    f'=IFERROR(ROUND((I{r}-G{r})/G{r}*100,1),"—")',
-        "payback": f'=IFERROR(ROUND(I{r}/G{r},2),"—")',
+        "conv":    f'=IFERROR(ROUND(F{r}/E{r}*100,1),"—")',
+        "revenue": f'=IFERROR(ROUND(F{r}*I{r},2),"—")',
+        "cpf":     f'=IFERROR(ROUND(H{r}/E{r},2),"—")',
+        "cac":     f'=IFERROR(ROUND(H{r}/F{r},2),"—")',
+        "romi":    f'=IFERROR(ROUND((J{r}-H{r})/H{r}*100,1),"—")',
+        "payback": f'=IFERROR(ROUND(J{r}/H{r},2),"—")',
     }
 
 
 def _totals_row(data_start: int, data_end: int) -> list:
-    """
-    Строка ИТОГО с агрегирующими формулами.
-    data_start..data_end — диапазон строк источников (включительно).
-    """
+    """Строка ИТОГО. E=Подписчики, F=Клиенты, H=Расход, I=Цена, J=Выручка."""
     def sr(col: str) -> str:
         return f"{col}{data_start}:{col}{data_end}"
 
     return [
-        "ИТОГО", "", "",
-        f"=SUM({sr('D')})",                                              # D Подписчики
-        f"=SUM({sr('E')})",                                              # E Клиенты
-        f'=IFERROR(ROUND(SUM({sr("E")})/SUM({sr("D")})*100,1),"—")',    # F Конв.%
-        f"=SUM({sr('G')})",                                              # G Расход
-        "",                                                               # H Цена (н/д для итого)
-        f"=IFERROR(SUM({sr('I')}),0)",                                   # I Выручка
-        f'=IFERROR(ROUND(SUM({sr("G")})/SUM({sr("D")}),2),"—")',        # J CPF
-        f'=IFERROR(ROUND(SUM({sr("G")})/SUM({sr("E")}),2),"—")',        # K CAC
-        f'=IFERROR(ROUND((SUM({sr("I")})-SUM({sr("G")}))/SUM({sr("G")})*100,1),"—")',  # L ROMI%
-        f'=IFERROR(ROUND(SUM({sr("I")})/SUM({sr("G")}),2),"—")',        # M Окуп.
+        "ИТОГО", "", "", "",
+        f"=SUM({sr('E')})",                                              # E Подписчики
+        f"=SUM({sr('F')})",                                              # F Клиенты
+        f'=IFERROR(ROUND(SUM({sr("F")})/SUM({sr("E")})*100,1),"—")',    # G Конв.%
+        f"=SUM({sr('H')})",                                              # H Расход
+        "",                                                               # I Цена (н/д)
+        f"=IFERROR(SUM({sr('J')}),0)",                                   # J Выручка
+        f'=IFERROR(ROUND(SUM({sr("H")})/SUM({sr("E")}),2),"—")',        # K CPF
+        f'=IFERROR(ROUND(SUM({sr("H")})/SUM({sr("F")}),2),"—")',        # L CAC
+        f'=IFERROR(ROUND((SUM({sr("J")})-SUM({sr("H")}))/SUM({sr("H")})*100,1),"—")',  # M ROMI%
+        f'=IFERROR(ROUND(SUM({sr("J")})/SUM({sr("H")}),2),"—")',        # N Окуп.
     ]
 
 
@@ -184,7 +182,7 @@ def _fetch_db_data(account_id: str, db) -> tuple[dict, list[dict], int, int]:
         raise RuntimeError(f"account_id={account_id!r} не найден в таблице accounts")
     account = _acc.data[0]
 
-    sources_res = db.table("sources").select("id, name, invite_link").eq("account_id", account_id).execute()
+    sources_res = db.table("sources").select("id, name, invite_link, join_request").eq("account_id", account_id).execute()
     raw_sources = sources_res.data if (sources_res and sources_res.data) else []
 
     sources = []
@@ -201,11 +199,12 @@ def _fetch_db_data(account_id: str, db) -> tuple[dict, list[dict], int, int]:
         total_cost = sum(float(c["amount"]) for c in (costs_r.data or []) if c.get("amount") not in (None, ""))
 
         sources.append({
-            "name":        src["name"],
-            "invite_link": src.get("invite_link") or "",
-            "sub_count":   sub_count,
-            "cust_count":  cust_count,
-            "total_cost":  total_cost,
+            "name":         src["name"],
+            "invite_link":  src.get("invite_link") or "",
+            "join_request": src.get("join_request") or False,
+            "sub_count":    sub_count,
+            "cust_count":   cust_count,
+            "total_cost":   total_cost,
         })
 
     logger.info("Синк: найдено источников=%d account=%s", len(sources), account_id)
@@ -286,19 +285,20 @@ def _sync_blocking(account_id: str) -> str:
         price_val = saved.get("price") or (product_price if product_price > 0 else "")
 
         rows.append([
-            src["name"],            # A Источник
-            src["invite_link"],     # B Ссылка
-            saved.get("ad_link", ""),  # C Ссылка на площадку
-            src["sub_count"],       # D Подписчики
-            src["cust_count"],      # E Клиенты
-            f["conv"],              # F Конв.% — ФОРМУЛА
-            cost_val,               # G Расход
-            price_val,              # H Цена продукта
-            f["revenue"],           # I Выручка — ФОРМУЛА
-            f["cpf"],               # J CPF — ФОРМУЛА
-            f["cac"],               # K CAC — ФОРМУЛА
-            f["romi"],              # L ROMI% — ФОРМУЛА
-            f["payback"],           # M Окуп. — ФОРМУЛА
+            src["name"],                  # A Источник
+            src["invite_link"],           # B Ссылка
+            "С ЗАЯВКОЙ" if src["join_request"] else "БЕЗ ЗАЯВКИ",  # C Тип ссылки
+            saved.get("ad_link", ""),     # D Ссылка на площадку
+            src["sub_count"],             # E Подписчики
+            src["cust_count"],            # F Клиенты
+            f["conv"],                    # G Конв.% — ФОРМУЛА
+            cost_val,                     # H Расход
+            price_val,                    # I Цена продукта
+            f["revenue"],                 # J Выручка — ФОРМУЛА
+            f["cpf"],                     # K CPF — ФОРМУЛА
+            f["cac"],                     # L CAC — ФОРМУЛА
+            f["romi"],                    # M ROMI% — ФОРМУЛА
+            f["payback"],                 # N Окуп. — ФОРМУЛА
         ])
 
     # Строка "Не определён" — убрана по требованию: неатрибутированный трафик не отображается

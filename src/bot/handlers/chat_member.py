@@ -83,13 +83,54 @@ async def on_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
             return
 
         # Проверяем платный чат
-        # ОТКЛЮЧЕНО: запись продаж и уведомления временно выключены
         account = await get_account_by_paid_chat(chat_id)
         if account:
-            logger.info(
-                "ℹ️ Вступление в платный чат user=%s chat=%s — запись продаж отключена",
-                tg_user_id, chat_id,
+            product_price = float(account.get("product_price") or 0)
+            customer = await attribute_customer(
+                account_id=account["id"],
+                tg_user_id=tg_user_id,
+                product_price=product_price,
+                raw_event={"chat_id": chat_id},
             )
+            entry_type = customer.get("entry_type", "paid")
+            source_id = customer.get("source_id")
+
+            # Не учитываем продажи без источника (source_id = NULL)
+            if not source_id:
+                logger.info(
+                    "ℹ️ Клиент user=%s без источника — не уведомляем и не синкаем",
+                    tg_user_id,
+                )
+                return
+
+            logger.info(
+                "✅ Клиент записан: user=%s entry_type=%s source=%s чат=%s",
+                tg_user_id, entry_type, source_id, chat_id,
+            )
+            import asyncio
+            from src.services.sheets_sync import sync_to_sheets
+            asyncio.create_task(sync_to_sheets(account["id"]))
+
+            # Уведомление только для заданного владельца (ID: 8612204954)
+            NOTIFY_OWNER_ID = 8612204954
+            try:
+                from src.core.database import get_db
+                from src.services.attribution import _one
+
+                def _get_source_name():
+                    db = get_db()
+                    result = db.table("sources").select("name").eq("id", source_id).limit(1).execute()
+                    row = _one(result)
+                    return row.get("name") if row else "?"
+
+                src_name = await asyncio.to_thread(_get_source_name)
+                if src_name:
+                    msg = f"💰 Новая продажа!\nИсточник: <b>{src_name}</b>\nСумма: <b>{product_price:.0f} ₽</b>"
+                else:
+                    msg = f"💰 Новая продажа!\nИсточник: <b>не определён</b>\nСумма: <b>{product_price:.0f} ₽</b>"
+                await bot.send_message(NOTIFY_OWNER_ID, msg, parse_mode="HTML")
+            except Exception as e:
+                logger.warning("Не удалось отправить уведомление: %s", e)
             return
 
         logger.debug("chat_member из неизвестного чата %s — игнорируем", chat_id)

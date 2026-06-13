@@ -208,13 +208,8 @@ def _fetch_db_data(account_id: str, db) -> tuple[dict, list[dict], int, int]:
             "total_cost":  total_cost,
         })
 
-    unk_s = db.table("subscribers").select("id").eq("account_id", account_id).is_("source_id", "null").execute()
-    unk_c = db.table("customers").select("id").eq("account_id", account_id).is_("source_id", "null").eq("entry_type", "paid").execute()
-    unk_sub  = len(unk_s.data) if (unk_s and unk_s.data) else 0
-    unk_cust = len(unk_c.data) if (unk_c and unk_c.data) else 0
-
-    logger.info("Синк: найдено источников=%d unk_sub=%d account=%s", len(sources), unk_sub, account_id)
-    return account, sources, unk_sub, unk_cust
+    logger.info("Синк: найдено источников=%d account=%s", len(sources), account_id)
+    return account, sources
 
 
 def _sync_blocking(account_id: str) -> str:
@@ -275,7 +270,7 @@ def _sync_blocking(account_id: str) -> str:
                 pass
 
     # ── 3. Читаем актуальные данные из БД ────────────────────────────────────
-    account, sources, unk_sub, unk_cust = _fetch_db_data(account_id, db)
+    account, sources = _fetch_db_data(account_id, db)
     product_price = float(account.get("product_price") or 0)
 
     # ── 4. Строим строки (D, E — числа; F, I–M — формулы) ───────────────────
@@ -306,20 +301,8 @@ def _sync_blocking(account_id: str) -> str:
             f["payback"],           # M Окуп. — ФОРМУЛА
         ])
 
-    # Строка "Не определён"
-    unk_r = DATA_START + len(sources)
-    unk_f = _row_formulas(unk_r)
-    rows.append([
-        "Не определён", "", "",
-        unk_sub,           # D
-        unk_cust,          # E
-        unk_f["conv"],     # F — считается если есть данные
-        "", "",            # G, H — нет расходов/цены
-        unk_f["revenue"],  # I
-        "—", "—", "—", "—",
-    ])
-
-    data_end = DATA_START + len(rows) - 1  # последняя строка данных
+    # Строка "Не определён" — убрана по требованию: неатрибутированный трафик не отображается
+    data_end = DATA_START + len(rows) - 1 if rows else DATA_START - 1
 
     # Строка ИТОГО (через пустую строку)
     totals_row_num = data_end + 2
@@ -329,17 +312,18 @@ def _sync_blocking(account_id: str) -> str:
     clear_range = f"A2:{LAST_COL}300"
     _retry_gspread(lambda: ws.batch_clear([clear_range]))
 
-    # Данные источников
-    write_range = f"A{DATA_START}:{LAST_COL}{data_end}"
-    _retry_gspread(lambda: ws.update(
-        write_range, rows, value_input_option="USER_ENTERED"
-    ))
+    if rows:
+        # Данные источников
+        write_range = f"A{DATA_START}:{LAST_COL}{data_end}"
+        _retry_gspread(lambda: ws.update(
+            write_range, rows, value_input_option="USER_ENTERED"
+        ))
 
-    # Строка ИТОГО
-    totals_range = f"A{totals_row_num}:{LAST_COL}{totals_row_num}"
-    _retry_gspread(lambda: ws.update(
-        totals_range, [totals], value_input_option="USER_ENTERED"
-    ))
+        # Строка ИТОГО
+        totals_range = f"A{totals_row_num}:{LAST_COL}{totals_row_num}"
+        _retry_gspread(lambda: ws.update(
+            totals_range, [totals], value_input_option="USER_ENTERED"
+        ))
 
     # ── 6. Форматирование ────────────────────────────────────────────────────
     _apply_formatting(ws, data_end, totals_row_num)
